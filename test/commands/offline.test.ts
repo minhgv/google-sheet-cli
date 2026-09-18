@@ -105,7 +105,7 @@ const DATA_ARG = 'DATA The data to be used as a JSON string - nested array [["1"
  * as required and in what order; the `expected` strings pin each flag's long name, short char,
  * default and env binding. Renaming or dropping any of them turns this file red.
  */
-const COMMANDS: { id: string; usage: string; expected: string[] }[] = [
+const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?: boolean }[] = [
   {
     id: 'data:append',
     usage: '$ google-sheet data:append DATA -t <value> -s <value> [-h] [-r]',
@@ -178,6 +178,24 @@ const COMMANDS: { id: string; usage: string; expected: string[] }[] = [
     usage: '$ google-sheet worksheet:rename -t <value> --newWorksheetTitle <value> -s <value> [-h] [-r]',
     expected: [SPREADSHEET_ID_FLAG, WORKSHEET_TITLE_FLAG, '--newWorksheetTitle=<value> (required) New title of the worksheet to use'],
   },
+  {
+    id: 'auth:login',
+    usage: '$ google-sheet auth:login [--clientSecretFile <value>]',
+    expected: ['--clientSecretFile=<value> [env: GSHEET_CLIENT_SECRET_FILE]'],
+    skipAuthFlags: true,
+  },
+  {
+    id: 'auth:logout',
+    usage: '$ google-sheet auth:logout',
+    expected: [],
+    skipAuthFlags: true,
+  },
+  {
+    id: 'auth:status',
+    usage: '$ google-sheet auth:status',
+    expected: [],
+    skipAuthFlags: true,
+  },
 ];
 
 /** The env every flag with an `env:` binding reads, so the suite is the same run to run. */
@@ -224,14 +242,14 @@ describe('offline commands', () => {
   });
 
   describe('--help', () => {
-    for (const { id, usage, expected } of COMMANDS) {
+    for (const { id, usage, expected, skipAuthFlags } of COMMANDS) {
       it(`runs "${id} --help" and keeps its flag surface`, async () => {
         const { error, stdout } = await runCommand([id, '--help']);
         if (error) throw error;
 
         const help = flat(stdout);
         expect(help).to.contain(usage);
-        for (const line of [...AUTHENTICATION_FLAGS, ...expected]) {
+        for (const line of [...(skipAuthFlags ? [] : AUTHENTICATION_FLAGS), ...expected]) {
           expect(help, `${id} --help is missing "${line}"`).to.contain(line);
         }
 

@@ -1,5 +1,7 @@
 import { auth, sheets, sheets_v4 } from '@googleapis/sheets';
+import { OAuth2Client } from 'google-auth-library';
 import { CredentialsInput, normalizeCredentials } from './credentials';
+import { getAuthenticatedClient } from './oauth';
 import { log } from './log';
 import { colToA, getLongestArray, getRange, parseRange, rangeWorksheet, requiredGrid } from './utils';
 
@@ -129,6 +131,21 @@ export default class GoogleSheet {
     // Create the JWT client
     const client = new auth.JWT({ email: client_email, key: private_key, scopes: [SHEETS_SCOPE] });
     this.sheets = sheets({ version: 'v4', auth: client, retryConfig: RETRY_CONFIG });
+  }
+
+  /**
+   * Authorize with OAuth 2.0 user credentials (personal Google account).
+   * Loads tokens from ~/.config/google-sheet-cli/token.json and refreshes if expired.
+   *
+   * @param {string} [clientSecretPath] - Path to client_secret.json (Desktop App type)
+   * @returns {Promise<void>}
+   * @memberof GoogleSheet
+   */
+  async authorizeOAuth(clientSecretPath?: string): Promise<void> {
+    const client = await getAuthenticatedClient(clientSecretPath);
+    // google-auth-library v11 (root) vs v10 (nested in @googleapis/sheets) have incompatible private fields.
+    // The runtime objects are identical; the cast resolves the dual-package type mismatch.
+    this.sheets = sheets({ version: 'v4', auth: client as unknown as InstanceType<typeof auth.JWT>, retryConfig: RETRY_CONFIG });
   }
 
   /**

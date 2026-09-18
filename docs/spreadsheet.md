@@ -13,6 +13,7 @@ Add a worksheet with the specified title to the spreadsheet
 ```
 USAGE
   $ google-sheet spreadsheet:add --spreadsheetTitle <value> [-h] [-r] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                      Show CLI help.
@@ -20,13 +21,16 @@ FLAGS
       --spreadsheetTitle=<value>  (required) Title of the spreadsheet
 
 AUTHENTICATION FLAGS
-  -c, --clientEmail=<value>      [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
-                                 GSHEET_CLIENT_EMAIL env variable if not provided.
-  -f, --credentialsFile=<value>  [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
-                                 credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
-                                 clientEmail and privateKey flags take precedence.
-  -p, --privateKey=<value>       [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
-                                 GSHEET_PRIVATE_KEY env variable if not provided.
+  -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
+                                  GSHEET_CLIENT_EMAIL env variable if not provided.
+  -f, --credentialsFile=<value>   [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
+                                  credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
+                                  clientEmail and privateKey flags take precedence.
+  -p, --privateKey=<value>        [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
+                                  GSHEET_PRIVATE_KEY env variable if not provided.
+      --clientSecretFile=<value>  [env: GSHEET_CLIENT_SECRET_FILE] Path to OAuth 2.0 client_secret.json (Desktop App
+                                  type)
+      --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
 
 DESCRIPTION
   Add a worksheet with the specified title to the spreadsheet
@@ -44,7 +48,8 @@ Get info for a specific spreadsheet
 
 ```
 USAGE
-  $ google-sheet spreadsheet:get -s <value> [-h] [-r] [-c <value>] [-p <value>] [-f <value>]
+  $ google-sheet spreadsheet:get -s <value> [-h] [-r] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
+    [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -52,13 +57,16 @@ FLAGS
   -s, --spreadsheetId=<value>  (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
 
 AUTHENTICATION FLAGS
-  -c, --clientEmail=<value>      [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
-                                 GSHEET_CLIENT_EMAIL env variable if not provided.
-  -f, --credentialsFile=<value>  [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
-                                 credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
-                                 clientEmail and privateKey flags take precedence.
-  -p, --privateKey=<value>       [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
-                                 GSHEET_PRIVATE_KEY env variable if not provided.
+  -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
+                                  GSHEET_CLIENT_EMAIL env variable if not provided.
+  -f, --credentialsFile=<value>   [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
+                                  credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
+                                  clientEmail and privateKey flags take precedence.
+  -p, --privateKey=<value>        [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
+                                  GSHEET_PRIVATE_KEY env variable if not provided.
+      --clientSecretFile=<value>  [env: GSHEET_CLIENT_SECRET_FILE] Path to OAuth 2.0 client_secret.json (Desktop App
+                                  type)
+      --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
 
 DESCRIPTION
   Get info for a specific spreadsheet

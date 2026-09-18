@@ -204,7 +204,7 @@ $ npm install -g google-sheet-cli
 $ google-sheet COMMAND
 running command...
 $ google-sheet (--version)
-google-sheet-cli/0.0.0 darwin-arm64 node-v24.11.1
+google-sheet-cli/0.0.0 darwin-arm64 node-v25.9.0
 $ google-sheet --help [COMMAND]
 USAGE
   $ google-sheet COMMAND
@@ -220,6 +220,7 @@ _See code: [src/lib/google-sheet.ts](https://github.com/jroehl/google-sheet-cli/
 <!-- commands -->
 # Command Topics
 
+* [`google-sheet auth`](docs/auth.md) - Authenticate with your Google account via OAuth 2.0
 * [`google-sheet data`](docs/data.md) - Manage data in worksheet
 * [`google-sheet help`](docs/help.md) - Display help for google-sheet.
 * [`google-sheet spreadsheet`](docs/spreadsheet.md) - Manage spreadsheets

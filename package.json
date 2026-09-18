@@ -11,8 +11,11 @@
     "@oclif/core": "^5.0.0",
     "@oclif/plugin-help": "^7.0.0",
     "chalk": "^4.1.2",
+    "get-port": "^7.2.0",
+    "google-auth-library": "^11.1.0",
     "js-yaml": "^3.14.1",
     "natural-orderby": "^2.0.3",
+    "open": "^11.0.4",
     "string-width": "^4.2.3",
     "tslib": "^2.5.2"
   },
