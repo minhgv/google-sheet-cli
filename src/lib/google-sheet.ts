@@ -256,6 +256,43 @@ export namespace GoogleSheetCli {
     columns?: number;
     dryRun?: boolean;
   }
+
+  export interface ShareOptions {
+    /** grant to these addresses; inferred type "user" unless --type overrides to "group" */
+    emails?: string[];
+    /** grant to a whole Google Workspace domain */
+    domain?: string;
+    /** grant to anyone with the link */
+    anyone?: boolean;
+    /** explicit grantee type; inferred from emails/domain/anyone when omitted */
+    type?: 'user' | 'group' | 'domain' | 'anyone';
+    role?: 'reader' | 'commenter' | 'writer';
+    /** send Google's notification email; default false — agents should not spam */
+    notify?: boolean;
+    /** message attached to the notification email (requires notify) */
+    message?: string;
+  }
+
+  export interface Permission {
+    id: string;
+    type: string;
+    role: string;
+    emailAddress?: string;
+    domain?: string;
+    displayName?: string;
+  }
+
+  export interface ShareResult {
+    spreadsheetId: string;
+    granted: Permission[];
+  }
+
+  export interface UnshareOptions {
+    /** permission id from listPermissions */
+    permissionId?: string;
+    /** resolve the permission id by grantee email */
+    email?: string;
+  }
 }
 
 // The Sheets API scope. 2.x asked for the retired Sheets v3 feed scope, which Google still
@@ -263,6 +300,13 @@ export namespace GoogleSheetCli {
 // call this class makes, `spreadsheets.create` included. Service account JWTs carry their scope
 // in the assertion rather than in a consent screen, so nothing has to be re-granted.
 const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+
+// Sharing is Drive API, not Sheets. `drive.file` covers files this app created or opened —
+// the agent report-handoff flow — without jumping to the restricted full-drive scope.
+// Existing OAuth tokens predate it: `auth:login` again before `spreadsheet:share`.
+const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 
 const LOG_NAMESPACE = 'gsheet:sheets';
 
@@ -327,6 +371,10 @@ const RETRY_CONFIG = {
 export default class GoogleSheet {
   private sheets!: sheets_v4.Sheets;
 
+  // Kept for raw Drive API calls (permissions). Structural type: both auth.JWT and
+  // OAuth2Client satisfy it, and it sidesteps the v10/v11 dual-package mismatch.
+  private authClient?: { request<T = unknown>(opts: { url: string; method?: string; params?: Record<string, unknown>; data?: unknown }): Promise<{ data: T }> };
+
   /**
    * Creates an instance of GoogleSheet.
    * @param {string} [spreadsheetId]
@@ -347,7 +395,8 @@ export default class GoogleSheet {
     if (!client_email) throw new Error('client_email is required to authorize');
     if (!private_key) throw new Error('private_key is required to authorize');
     // Create the JWT client
-    const client = new auth.JWT({ email: client_email, key: private_key, scopes: [SHEETS_SCOPE] });
+    const client = new auth.JWT({ email: client_email, key: private_key, scopes: [SHEETS_SCOPE, DRIVE_FILE_SCOPE] });
+    this.authClient = client;
     this.sheets = sheets({ version: 'v4', auth: client, retryConfig: RETRY_CONFIG });
   }
 
@@ -361,6 +410,7 @@ export default class GoogleSheet {
    */
   async authorizeOAuth(clientSecretPath?: string): Promise<void> {
     const client = await getAuthenticatedClient(clientSecretPath);
+    this.authClient = client;
     // google-auth-library v11 (root) vs v10 (nested in @googleapis/sheets) have incompatible private fields.
     // The runtime objects are identical; the cast resolves the dual-package type mismatch.
     this.sheets = sheets({ version: 'v4', auth: client as unknown as InstanceType<typeof auth.JWT>, retryConfig: RETRY_CONFIG });
@@ -1921,6 +1971,135 @@ export default class GoogleSheet {
       dryRun: Boolean(options.dryRun),
       ...(options.dryRun ? { requests: [request] } : {}),
     };
+  }
+
+  /**
+   * Share the spreadsheet with users, a domain, or anyone with the link.
+   * Drive API permissions.create — requires the drive.file scope (re-run `auth:login`
+   * on tokens issued before it was added).
+   *
+   * @param {GoogleSheetCli.ShareOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.ShareResult>}
+   * @memberof GoogleSheet
+   */
+  async shareSpreadsheet(options: GoogleSheetCli.ShareOptions, spreadsheetId?: string): Promise<GoogleSheetCli.ShareResult> {
+    const fileId = spreadsheetId || this.spreadsheetId;
+    if (!fileId) throw new Error('Option property "spreadsheetId" is required');
+
+    const role = options.role || 'reader';
+    const grantees: { type: string; emailAddress?: string; domain?: string }[] = [];
+    if (options.anyone) {
+      grantees.push({ type: options.type || 'anyone' });
+    } else if (options.domain) {
+      grantees.push({ type: options.type || 'domain', domain: options.domain });
+    } else if (options.emails && options.emails.length > 0) {
+      const type = options.type || 'user';
+      for (const emailAddress of options.emails) grantees.push({ type, emailAddress });
+    } else {
+      throw new Error('shareSpreadsheet requires one of "emails", "domain", or "anyone"');
+    }
+
+    const granted: GoogleSheetCli.Permission[] = [];
+    for (const grantee of grantees) {
+      const response = await this.driveRequest<{ id: string; type: string; role: string; emailAddress?: string; domain?: string; displayName?: string }>({
+        method: 'POST',
+        url: `${DRIVE_API_BASE}/files/${fileId}/permissions`,
+        params: {
+          sendNotificationEmail: Boolean(options.notify),
+          ...(options.message ? { emailMessage: options.message } : {}),
+          fields: 'id,type,role,emailAddress,domain,displayName',
+        },
+        data: { role, ...grantee },
+      });
+      granted.push(response);
+    }
+
+    return { spreadsheetId: fileId, granted };
+  }
+
+  /**
+   * List the sharing permissions on the spreadsheet.
+   *
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.Permission[]>}
+   * @memberof GoogleSheet
+   */
+  async listPermissions(spreadsheetId?: string): Promise<GoogleSheetCli.Permission[]> {
+    const fileId = spreadsheetId || this.spreadsheetId;
+    if (!fileId) throw new Error('Option property "spreadsheetId" is required');
+    const response = await this.driveRequest<{ permissions?: GoogleSheetCli.Permission[] }>({
+      method: 'GET',
+      url: `${DRIVE_API_BASE}/files/${fileId}/permissions`,
+      params: { fields: 'permissions(id,type,role,emailAddress,domain,displayName)' },
+    });
+    return response.permissions || [];
+  }
+
+  /**
+   * Remove a sharing permission, by id or by grantee email.
+   *
+   * @param {GoogleSheetCli.UnshareOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<{ spreadsheetId: string; permissionId: string; removed: boolean }>}
+   * @memberof GoogleSheet
+   */
+  async unshareSpreadsheet(
+    options: GoogleSheetCli.UnshareOptions,
+    spreadsheetId?: string
+  ): Promise<{ spreadsheetId: string; permissionId: string; removed: boolean }> {
+    const fileId = spreadsheetId || this.spreadsheetId;
+    if (!fileId) throw new Error('Option property "spreadsheetId" is required');
+
+    let permissionId = options.permissionId;
+    if (!permissionId && options.email) {
+      const permissions = await this.listPermissions(fileId);
+      const match = permissions.find((p) => p.emailAddress?.toLowerCase() === options.email!.toLowerCase());
+      if (!match) throw new Error(`No permission found for "${options.email}" on this spreadsheet`);
+      permissionId = match.id;
+    }
+    if (!permissionId) throw new Error('unshareSpreadsheet requires "permissionId" or "email"');
+
+    await this.driveRequest<void>({
+      method: 'DELETE',
+      url: `${DRIVE_API_BASE}/files/${fileId}/permissions/${permissionId}`,
+    });
+    return { spreadsheetId: fileId, permissionId, removed: true };
+  }
+
+  /**
+   * One raw Drive API call through the stored auth client, with errors translated
+   * into the two messages a caller can act on.
+   */
+  private async driveRequest<T>(opts: { url: string; method?: string; params?: Record<string, unknown>; data?: unknown }): Promise<T> {
+    if (!this.authClient) throw new Error('authorize() or authorizeOAuth() must run before Drive calls');
+    try {
+      const response = await this.authClient.request<T>(opts);
+      return response.data;
+    } catch (error) {
+      // GaxiosError carries the HTTP status on error.response.status; narrow by shape
+      // rather than instanceof so no transitive gaxios import is needed.
+      const rawStatus =
+        error && typeof error === 'object' && 'response' in error && error.response && typeof error.response === 'object' && 'status' in error.response
+          ? error.response.status
+          : undefined;
+      const status = typeof rawStatus === 'number' ? rawStatus : undefined;
+      const message = error instanceof Error ? error.message : 'Drive API request failed';
+      if (status === 403) {
+        throw new Error(
+          `Drive API denied the request (${message}). ` +
+            'If this is an OAuth token issued before drive.file was added, run `gsheet auth:login` again to re-grant scopes.'
+        );
+      }
+      if (status === 404) {
+        throw new Error(
+          `Drive API could not find the file (${message}). ` +
+            'Under the drive.file scope only files this app created or has opened are visible — ' +
+            'a pre-existing spreadsheet may need to be opened once through this app first.'
+        );
+      }
+      throw error;
+    }
   }
 
   /**

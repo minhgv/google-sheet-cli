@@ -11,6 +11,7 @@ google-sheet-cli is designed to be driven by coding agents (Claude Code, OpenCod
 - **Locate before writing.** `data:find` returns A1 coordinates for a value/header/regex so an agent can target `data:update` at an exact cell instead of rewriting a whole range.
 - **Formatting is a separate, value-safe surface.** `format:cells`/`format:merge` only write `userEnteredFormat` (bold, colors, borders, number formats, merge) — they cannot clobber data. Use them to render a readable report after the data is in place.
 - **Structure is mutable.** `grid:insert|delete|hide|resize|freeze` move rows/columns without touching values. `grid:delete --dryRun` previews the exact values about to be lost — always dry-run a delete first.
+- **Sharing is Drive, not Sheets.** `spreadsheet:share|permissions|unshare` call the Drive API under `drive.file` — files this app created or has opened only; a pre-existing sheet may need one `spreadsheet:get` first. `--notify` defaults OFF so agents never spam grantees. Tokens issued before the scope was added must re-run `auth:login`.
 
 ## Rules for agents
 

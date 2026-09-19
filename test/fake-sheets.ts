@@ -24,6 +24,7 @@ const httpModule = require('http');
 // Accepting both keeps the fake honest about which one the client under test actually used.
 const TOKEN_URLS = ['https://www.googleapis.com/oauth2/v4/token', 'https://oauth2.googleapis.com/token'];
 const SHEETS_HOST = 'sheets.googleapis.com';
+const DRIVE_HOST = 'www.googleapis.com';
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 export interface FakeWorksheet {
@@ -248,7 +249,10 @@ export class FakeSheets {
 
   private nextSheetId = 100;
   private nextSpreadsheetId = 1;
+  private nextPermissionId = 1;
   private quotaRejectionsLeft = 0;
+  /** Drive permissions keyed by fileId */
+  private permissions = new Map<string, { id: string; type: string; role: string; emailAddress?: string; domain?: string }[]>();
   private originalHttpsRequest?: Function;
   private originalHttpRequest?: Function;
 
@@ -300,6 +304,8 @@ export class FakeSheets {
     this.spreadsheets.clear();
     this.requests.length = 0;
     this.quotaRejectionsLeft = 0;
+    this.permissions.clear();
+    this.nextPermissionId = 1;
   }
 
   /**
@@ -470,6 +476,10 @@ export class FakeSheets {
       return { status: 200, body: { access_token: 'fake-access-token', expires_in: 3600, token_type: 'Bearer' } };
     }
 
+    if (parsed.hostname === DRIVE_HOST && parsed.pathname.startsWith('/drive/v3/')) {
+      return this.driveHandle(method, parsed, body);
+    }
+
     if (parsed.hostname !== SHEETS_HOST) {
       return { status: 404, body: { error: { code: 404, message: `Unexpected host ${parsed.hostname}`, status: 'NOT_FOUND' } } };
     }
@@ -502,6 +512,50 @@ export class FakeSheets {
     if (method === 'GET' && spreadsheet) return this.spreadsheetGet(spreadsheet[1]);
 
     return { status: 404, body: { error: { code: 404, message: `Unhandled ${method} ${path}`, status: 'NOT_FOUND' } } };
+  }
+
+  /**
+   * Drive v3 permissions: create/list/delete against an in-memory map keyed by fileId.
+   * The fake does not model drive.file's created-or-opened visibility rule — it answers
+   * for any known spreadsheet id, which is what the tests exercise.
+   */
+  private driveHandle(method: string, parsed: URL, body: any): FakeResponse {
+    const path = decodeURIComponent(parsed.pathname);
+
+    const create = path.match(/^\/drive\/v3\/files\/([^/]+)\/permissions$/);
+    if (method === 'POST' && create) {
+      const fileId = create[1];
+      if (!this.spreadsheets.has(fileId)) return this.notFound();
+      const permission = {
+        id: `perm-${this.nextPermissionId++}`,
+        type: body?.type ?? 'user',
+        role: body?.role ?? 'reader',
+        ...(body?.emailAddress ? { emailAddress: body.emailAddress } : {}),
+        ...(body?.domain ? { domain: body.domain } : {}),
+      };
+      const list = this.permissions.get(fileId) || [];
+      list.push(permission);
+      this.permissions.set(fileId, list);
+      return { status: 200, body: permission };
+    }
+
+    if (method === 'GET' && create) {
+      const fileId = create[1];
+      if (!this.spreadsheets.has(fileId)) return this.notFound();
+      return { status: 200, body: { permissions: this.permissions.get(fileId) || [] } };
+    }
+
+    const remove = path.match(/^\/drive\/v3\/files\/([^/]+)\/permissions\/([^/]+)$/);
+    if (method === 'DELETE' && remove) {
+      const [, fileId, permissionId] = remove;
+      const list = this.permissions.get(fileId) || [];
+      const remaining = list.filter((p) => p.id !== permissionId);
+      if (remaining.length === list.length) return this.notFound();
+      this.permissions.set(fileId, remaining);
+      return { status: 200, body: {} };
+    }
+
+    return { status: 404, body: { error: { code: 404, message: `Unhandled Drive ${method} ${path}`, status: 'NOT_FOUND' } } };
   }
 
   /**

@@ -185,6 +185,24 @@ class StubGoogleSheet {
       dryRun: Boolean(typed.dryRun),
     };
   }
+
+  async shareSpreadsheet(options: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'shareSpreadsheet', args: [options, spreadsheetId] });
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      granted: [{ id: 'perm-1', type: 'user', role: 'reader', emailAddress: 'user@example.com' }],
+    };
+  }
+
+  async listPermissions(spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'listPermissions', args: [spreadsheetId] });
+    return [{ id: 'perm-1', type: 'user', role: 'reader', emailAddress: 'user@example.com' }];
+  }
+
+  async unshareSpreadsheet(options: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'unshareSpreadsheet', args: [options, spreadsheetId] });
+    return { spreadsheetId: spreadsheetId || SPREADSHEET_ID, permissionId: 'perm-1', removed: true };
+  }
 }
 
 // The namespace object is typed read-only; the module itself is a plain CommonJS export that a
@@ -553,6 +571,32 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--columns=<value>',
       '--dryRun',
     ],
+  },
+  {
+    id: 'spreadsheet:share',
+    usage: '$ google-sheet spreadsheet:share -s <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      '--email=<value>',
+      '--domain=<value>',
+      '--anyone',
+      '--type=<option>',
+      '<options: user|group|domain|anyone>',
+      '--role=<option> [default: reader]',
+      '<options: reader|commenter|writer>',
+      '--notify',
+      '--message=<value>',
+    ],
+  },
+  {
+    id: 'spreadsheet:permissions',
+    usage: '$ google-sheet spreadsheet:permissions -s <value> [-h] [-r]',
+    expected: [SPREADSHEET_ID_FLAG],
+  },
+  {
+    id: 'spreadsheet:unshare',
+    usage: '$ google-sheet spreadsheet:unshare -s <value> [-h] [-r]',
+    expected: [SPREADSHEET_ID_FLAG, '--permissionId=<value>', '--email=<value>'],
   },
 ];
 

@@ -57,6 +57,9 @@ grid:delete       -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count
 grid:hide         -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count N] [--unhide] [--dryRun]
 grid:resize       -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count N] (--pixels N|--auto) [--dryRun]
 grid:freeze       -s <id> -t <title> [--rows N] [--columns N] [--dryRun]   (0 unfreezes that axis)
+spreadsheet:share    -s <id> (--email <addr>...|--domain <d>|--anyone) [--role reader|commenter|writer] [--notify --message <text>]
+spreadsheet:permissions -s <id> [--rawOutput]
+spreadsheet:unshare -s <id> (--permissionId <id>|--email <addr>)
 spreadsheet:add   --spreadsheetTitle <name>
 spreadsheet:get   -s <id> [--rawOutput]
 worksheet:add|get|remove -s <id> -t <title>
@@ -82,6 +85,7 @@ report:run --template <template.json> \
 - All data commands accept: positional JSON array-of-arrays, `-i <file>` (format inferred from extension), or `-i -` (stdin; pipe CSV → add `--inputFormat csv`).
 - Table output supports oclif ux flags: `--csv`, `--columns`, `--sort`, `--filter`. `--rawOutput`/`-r` prints JSON.
 - Writes are formula-safe by default: existing formula cells are NOT overwritten without explicit `--overwriteFormulas`; batch/update writes support `--dryRun` preview with zero side effects.
+- `spreadsheet:share|permissions|unshare` use the Drive API (`drive.file` scope). OAuth tokens issued before that scope was added must re-run `auth:login`. Under `drive.file` only files this app created or has opened are shareable — a pre-existing sheet may need one `spreadsheet:get` through this app first. `--notify` defaults OFF.
 - `data:find` returns `{matchCount, truncated, matches:[{a1,row,column,columnLetter,value,rowValues?}]}`. Use it to locate a row/cell before a targeted `data:update`. `--header "Name"` resolves a column by its header text (first scanned row); `--byRow` returns full row values. Zero matches → `matchCount:0`, exit 0.
 - `format:cells`/`format:merge` only touch `userEnteredFormat` — values and formulas are never overwritten. `--dryRun` prints the exact batchUpdate request bodies. For a pretty report: `format:cells --range A1:J1 --bold --backgroundColor "#1a73e8" --textColor "#ffffff"` then `format:cells --range A2:J50 --numberFormat "#,##0.00" --borders all`.
 - `grid:*` commands mutate structure, not values: `insert`/`delete` shift cells (delete `--dryRun` shows the values about to be lost), `hide`/`resize`/`freeze` are non-destructive. All are 1-based `--start`/`--count`; `--dryRun` prints the exact batchUpdate request.

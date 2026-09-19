@@ -1,8 +1,8 @@
 # Agent coverage roadmap — find, formatting, grid structure, sharing
 
 Work ID: 2026-09-19-agent-coverage-spec
-Status: Phase 1 + Phase 2 implemented and verified (409 unit tests green, live-verified on test spreadsheet). Phase 3 (`spreadsheet:share`) remains spec-only, awaiting scope decision + approval.
-Next safe action: Phase 3 (`spreadsheet:share`) on user approval + Drive scope decision. Commit requires explicit user authorization.
+Status: All three phases implemented, verified, and live-tested (429 unit tests green; Drive share round-trip verified on test spreadsheet after Drive API enablement + token re-login).
+Next safe action: commit Phase 3 on user authorization.
 
 ## Context
 
@@ -151,7 +151,7 @@ Acceptance: create spreadsheet via `spreadsheet:add` → `share --email x@y --ro
 - [x] T-02: `format:cells` + `format:merge` commands + offline tests (AC-02).
 - [x] T-03: `data:find` + `findData` + tests (AC-01).
 - [x] T-04: fake-sheets dimension mutations + `grid:*` commands + tests (AC-03).
-- [ ] T-05: scope decision → `spreadsheet:share|permissions|unshare` + Drive fake + tests (AC-04).
+- [x] T-05: `drive.file` scope → `spreadsheet:share|permissions|unshare` + Drive fake + tests (AC-04). Live path pending Drive API enablement.
 - [x] T-06: docs regeneration, SKILL.md, agents.md, full suite via test-runner (AC-05, AC-06) — Phase 1 scope.
 
 ## Assumptions and contingencies
@@ -196,4 +196,14 @@ Behaviors pinned by test (not bugs):
 - Live verification on `feature-check`: `grid:insert ROWS start=3 count=2` → rows shifted, `26,500.00` format preserved on moved cells; `grid:delete` restored; `grid:freeze --rows=1` → `frozenRowCount` in metadata; `grid:hide`/`--unhide` on column D round-tripped.
 - Deviations: none beyond spec. Human output polished post-live ("Hid 1 column(s)", "Froze 1 row(s)").
 - Docs: `npm run version` regenerated `docs/grid.md` + README; `skill/SKILL.md` + `docs/agents.md` updated; installed skill copy refreshed.
+- Not committed: awaiting explicit user authorization per repo rules.
+
+## Phase 3 execution evidence (2026-09-19)
+
+- [x] T-05: scope decision = `drive.file` (user-approved). `shareSpreadsheet`/`listPermissions`/`unshareSpreadsheet` via raw `authClient.request` — no `@googleapis/drive` dependency. `authClient` field stored on both `authorize` (JWT, scopes `[sheets, drive.file]`) and `authorizeOAuth` paths; `oauth.ts` `generateAuthUrl` gains `drive.file`.
+- Commands: `spreadsheet:share` (`--email`×N XOR `--domain` XOR `--anyone`, `--type` override, `--role` default reader, `--notify` default OFF + `--message` dependsOn notify), `spreadsheet:permissions`, `spreadsheet:unshare` (`--permissionId` XOR `--email`, resolves via list).
+- fake-sheets: `www.googleapis.com/drive/v3` host branch — `permissions.create`/`list`/`delete` against in-memory map keyed by fileId; 404 for unknown fileId.
+- Error translation in `driveRequest`: 403 → "re-run auth:login" hint; 404 → "drive.file only sees files this app created/opened" hint.
+- Live path: token re-granted with `drive.file` (user re-logged in); Drive API enabled in Cloud project 701850506685. Round-trip verified on `1WD2go7gcZRSus83RBPJUStHQM04JOFESVRZsZQSkFU0`: `permissions` listed owner → `share --email giapminh79@gmail.com --role reader` granted `perm-13392153234400355928` → `unshare --email` resolved + removed → final list back to owner only.
+- Docs: `npm run version` regenerated `docs/spreadsheet.md` + README; `skill/SKILL.md` + `docs/agents.md` updated; installed skill copy refreshed.
 - Not committed: awaiting explicit user authorization per repo rules.

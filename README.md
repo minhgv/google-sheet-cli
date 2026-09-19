@@ -2,6 +2,19 @@
 
 A simple helper cli to interact with google sheets.
 
+## Features
+
+| Group | Commands | What it does |
+|---|---|---|
+| 🔐 Auth | `auth:login` `auth:logout` `auth:status` | OAuth 2.0 Desktop flow; token at `~/.config/google-sheet-cli/token.json` |
+| 📊 Data | `data:get` `data:append` `data:append-table` `data:update` `data:batch-get` `data:batch-update` `data:find` | Read/write ranges; batch APIs; `--dryRun`, `--overwriteFormulas` guard, `--valueRenderOption`, file/stdin input; `data:find` locates cells by condition |
+| 📄 Spreadsheet | `spreadsheet:add` `spreadsheet:get` `spreadsheet:share` `spreadsheet:permissions` `spreadsheet:unshare` | Create/inspect spreadsheets; Drive-API sharing (`--email`/`--domain`/`--anyone`, `--role`, `--notify` off by default) |
+| 📑 Worksheet | `worksheet:add` `worksheet:get` `worksheet:remove` `worksheet:rename` | Manage worksheets inside a spreadsheet |
+| 🎨 Format | `format:cells` `format:merge` | `userEnteredFormat` only — bold, colors, borders, number formats, merge; `--dryRun` |
+| 📐 Grid | `grid:insert` `grid:delete` `grid:hide` `grid:resize` `grid:freeze` | Structural row/column mutations; `grid:delete --dryRun` previews values about to be lost |
+| 📁 Workbook | `workbook:inspect` `workbook:read` `workbook:write` | Offline local .xlsx — no credentials, no network; atomic write + SHA-256 |
+| 📋 Report | `report:run` | Render a JSON report spec onto a sheet (finance/manpower/sales) |
+
 ## Migrating from 2.x
 
 3.0.0 is a platform release. Every command, every flag and everything the commands print is the same as on 2.3.0, and the sequence of Sheets API calls each library method makes is unchanged — same requests, same order, same bodies. What moved is the Node floor, the module a library consumer imports, the type of the errors that are thrown, and one hostname the auth stack talks to.
