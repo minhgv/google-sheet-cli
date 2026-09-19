@@ -1,8 +1,8 @@
 # Agent coverage roadmap — find, formatting, grid structure, sharing
 
 Work ID: 2026-09-19-agent-coverage-spec
-Status: All three phases implemented, verified, and live-tested (429 unit tests green; Drive share round-trip verified on test spreadsheet after Drive API enablement + token re-login).
-Next safe action: commit Phase 3 on user authorization.
+Status: All three phases implemented, verified, live-tested, committed `ac78853` and pushed to `origin/master` (2026-09-19). semantic-release will cut a minor version on the next release run.
+Next safe action: none — record closed. Monitor CI for the release tag.
 
 ## Context
 
