@@ -22,7 +22,7 @@ export async function resolveDataMatrix(
   }
 
   if ((dataArg === undefined || dataArg === '') && (inputFile === undefined || inputFile === '')) {
-    throw new Error('No data provided. Specify either positional data argument or --input flag');
+    throw new Error('No data provided. Specify either positional data argument or --input flag (pipe data in via --input=-)');
   }
 
   const format = inputFormat ? (inputFormat.toLowerCase() as 'json' | 'csv') : undefined;
@@ -130,7 +130,7 @@ export async function resolveBatchUpdates(
   }
 
   if ((dataArg === undefined || dataArg === '') && (inputFile === undefined || inputFile === '')) {
-    throw new Error('No data provided. Specify either positional data argument or --input flag');
+    throw new Error('No data provided. Specify either positional data argument or --input flag (pipe data in via --input=-)');
   }
 
   let rawParsed: unknown;

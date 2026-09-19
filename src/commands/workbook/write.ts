@@ -83,6 +83,8 @@ export default class WorkbookWrite extends Command {
       name: 'data',
       description: 'Data as a JSON string (nested 2D array or ReportDocument object)',
       required: false,
+      // Same contract as optionalData: stdin goes through `--input -`, never auto-fills here.
+      ignoreStdin: true,
     }),
   };
 

@@ -93,6 +93,10 @@ export const optionalData = Args.string({
   name: 'data',
   description: 'The data to be used as a JSON string - nested array [["1", "2", "3"]]',
   required: false,
+  // oclif 5's parser otherwise assigns piped stdin to this positional, which collides with
+  // `--input -`: the pipe would reach both sources and resolveDataMatrix rejects that. Stdin
+  // must go through `--input -` (see resolveDataMatrix), so the positional never auto-fills.
+  ignoreStdin: true,
 });
 export interface CommonFlags extends GoogleAuthFlags {
   rawOutput?: boolean;

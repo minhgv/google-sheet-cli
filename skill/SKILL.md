@@ -41,7 +41,7 @@ data:append-table -s <id> -t <title> -i <file|-> [--inputFormat json|csv] [--ran
 data:batch-get    -s <id> --ranges '["Sheet1!A1:B10","Sheet2!C1:D5"]' [--chunkSize] [render options]
 data:batch-update -s <id> -i <file|-> [--valueInputOption] [--dryRun] [--overwriteFormulas]
                   [--chunkByteSize --maxRowsPerChunk]     payload: [{"range":"A1","values":[[...]]}]
-spreadsheet:add   -n <name>
+spreadsheet:add   --spreadsheetTitle <name>
 spreadsheet:get   -s <id> [--rawOutput]
 worksheet:add|get|remove -s <id> -t <title>
 worksheet:rename  -s <id> -t <old> -n <new>
