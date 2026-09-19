@@ -119,7 +119,7 @@
   },
   "repository": "jroehl/google-sheet-cli",
   "scripts": {
-    "build": "rm -rf dist && tsc -b",
+    "build": "rm -rf lib && tsc -b",
     "postpack": "rm -f oclif.manifest.json",
     "version": "npm run build && oclif readme --multi && sh ./bin/clean.sh && git add README.md docs/*.md",
     "prepack": "npm run build && oclif manifest && oclif readme --multi",
