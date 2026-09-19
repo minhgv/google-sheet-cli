@@ -1,6 +1,6 @@
 ---
 name: google-sheet
-description: Read, write, and manage Google Sheets AND local Excel (.xlsx) files from the terminal using the google-sheet-cli oclif CLI. Supports OAuth 2.0 user auth and Service Account JWT for cloud, plus fully-offline XLSX inspect/read/write and declarative report automation (finance cash-flow, manpower estimation) from templates. Use when the user asks to read/update a Google Sheet, batch-read ranges, append table rows, create spreadsheets, work with a docs.google.com/spreadsheets URL, inspect or edit a local .xlsx, or generate a report from CSV/JSON via a template. Trigger on "đọc sheet", "google sheet", "spreadsheet", "xlsx", "excel", "report", "báo cáo", "data:get", "gsheet", or a Google Sheets URL.
+description: Read, write, and manage Google Sheets AND local Excel (.xlsx) files from the terminal using the google-sheet-cli oclif CLI. Supports OAuth 2.0 user auth and Service Account JWT for cloud, plus fully-offline XLSX inspect/read/write, declarative report automation (finance cash-flow, manpower estimation) from templates, cell formatting (borders, bold, colors, number formats, merge), and cell search returning A1 coordinates. Use when the user asks to read/update a Google Sheet, batch-read ranges, append table rows, create spreadsheets, work with a docs.google.com/spreadsheets URL, inspect or edit a local .xlsx, generate a report from CSV/JSON via a template, find a cell/row by value, or format a sheet for a pretty report. Trigger on "đọc sheet", "google sheet", "spreadsheet", "xlsx", "excel", "report", "báo cáo", "data:get", "data:find", "format:cells", "gsheet", or a Google Sheets URL.
 ---
 
 # google-sheet-cli
@@ -41,6 +41,22 @@ data:append-table -s <id> -t <title> -i <file|-> [--inputFormat json|csv] [--ran
 data:batch-get    -s <id> --ranges '["Sheet1!A1:B10","Sheet2!C1:D5"]' [--chunkSize] [render options]
 data:batch-update -s <id> -i <file|-> [--valueInputOption] [--dryRun] [--overwriteFormulas]
                   [--chunkByteSize --maxRowsPerChunk]     payload: [{"range":"A1","values":[[...]]}]
+data:find         -s <id> -t <title> (--equals|--contains|--regex <v>) [--range A1:Z100]
+                  [--column B | --header "Status"] [--ignoreCase|--no-ignoreCase]
+                  [--limit N|--first] [--byRow] [render options] → A1 coordinates JSON
+format:cells      -s <id> -t <title> --range A1:J1 [--bold --italic --underline --strikethrough]
+                  [--fontSize --fontFamily --textColor #RRGGBB --backgroundColor #RRGGBB]
+                  [--horizontalAlignment LEFT|CENTER|RIGHT] [--verticalAlignment TOP|MIDDLE|BOTTOM]
+                  [--wrapStrategy OVERFLOW_CELL|CLIP|WRAP] [--numberFormat "#,##0.00" [--numberFormatType]]
+                  [--borders top,bottom,all,inner --borderStyle SOLID_THICK --borderColor #RRGGBB]
+                  [--clear] [-i spec.json|-] [--dryRun]   format-only; never touches values
+format:merge      -s <id> -t <title> --range A1:J1 [--type MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS|--unmerge] [--dryRun]
+grid:insert       -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count N] [--inheritFromBefore] [--dryRun]
+grid:delete       -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count N] [--dryRun]
+                  (dryRun previews the values about to be removed)
+grid:hide         -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count N] [--unhide] [--dryRun]
+grid:resize       -s <id> -t <title> --dimension ROWS|COLUMNS --start N [--count N] (--pixels N|--auto) [--dryRun]
+grid:freeze       -s <id> -t <title> [--rows N] [--columns N] [--dryRun]   (0 unfreezes that axis)
 spreadsheet:add   --spreadsheetTitle <name>
 spreadsheet:get   -s <id> [--rawOutput]
 worksheet:add|get|remove -s <id> -t <title>
@@ -65,8 +81,10 @@ report:run --template <template.json> \
 - `-s` = spreadsheet ID (from URL `docs.google.com/spreadsheets/d/<ID>/edit`), `-t` = worksheet tab title (exact, case-sensitive — quote it).
 - All data commands accept: positional JSON array-of-arrays, `-i <file>` (format inferred from extension), or `-i -` (stdin; pipe CSV → add `--inputFormat csv`).
 - Table output supports oclif ux flags: `--csv`, `--columns`, `--sort`, `--filter`. `--rawOutput`/`-r` prints JSON.
-- `data:append-table` uses the native Sheets `values:append` — appends to the real end of a table, preserves buffer rows, allows multiple tables per sheet. `data:append` is legacy bounding-box append.
 - Writes are formula-safe by default: existing formula cells are NOT overwritten without explicit `--overwriteFormulas`; batch/update writes support `--dryRun` preview with zero side effects.
+- `data:find` returns `{matchCount, truncated, matches:[{a1,row,column,columnLetter,value,rowValues?}]}`. Use it to locate a row/cell before a targeted `data:update`. `--header "Name"` resolves a column by its header text (first scanned row); `--byRow` returns full row values. Zero matches → `matchCount:0`, exit 0.
+- `format:cells`/`format:merge` only touch `userEnteredFormat` — values and formulas are never overwritten. `--dryRun` prints the exact batchUpdate request bodies. For a pretty report: `format:cells --range A1:J1 --bold --backgroundColor "#1a73e8" --textColor "#ffffff"` then `format:cells --range A2:J50 --numberFormat "#,##0.00" --borders all`.
+- `grid:*` commands mutate structure, not values: `insert`/`delete` shift cells (delete `--dryRun` shows the values about to be lost), `hide`/`resize`/`freeze` are non-destructive. All are 1-based `--start`/`--count`; `--dryRun` prints the exact batchUpdate request.
 
 ## Workflow for "read a sheet URL"
 

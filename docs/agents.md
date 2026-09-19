@@ -8,6 +8,9 @@ google-sheet-cli is designed to be driven by coding agents (Claude Code, OpenCod
 - **Machine-readable output.** Every command accepts `--rawOutput`/`-r` (JSON) and table output supports `--csv`, `--columns`, `--sort`, `--filter` — pipe through `jq` instead of parsing prose.
 - **Deterministic input.** All data commands accept positional JSON, `-i <file>` (format inferred from extension), or `-i -` stdin.
 - **Writes fail closed.** Existing formulas are never overwritten without explicit `--overwriteFormulas`; `--dryRun` previews every mutation (cells, conflicts, managed-range extent) with zero side effects.
+- **Locate before writing.** `data:find` returns A1 coordinates for a value/header/regex so an agent can target `data:update` at an exact cell instead of rewriting a whole range.
+- **Formatting is a separate, value-safe surface.** `format:cells`/`format:merge` only write `userEnteredFormat` (bold, colors, borders, number formats, merge) — they cannot clobber data. Use them to render a readable report after the data is in place.
+- **Structure is mutable.** `grid:insert|delete|hide|resize|freeze` move rows/columns without touching values. `grid:delete --dryRun` previews the exact values about to be lost — always dry-run a delete first.
 
 ## Rules for agents
 

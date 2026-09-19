@@ -34,6 +34,13 @@ export interface FakeWorksheet {
   columnCount: number;
   frozenRowCount?: number;
   frozenColumnCount?: number;
+  /** merged regions as reported by spreadsheets.get, 0-based end-exclusive */
+  merges?: { startRowIndex: number; endRowIndex: number; startColumnIndex: number; endColumnIndex: number }[];
+  /** per-dimension properties keyed by 1-based row/column index */
+  dimensionProps?: {
+    rows?: Record<number, { hiddenByUser?: boolean; pixelSize?: number }>;
+    columns?: Record<number, { hiddenByUser?: boolean; pixelSize?: number }>;
+  };
   /** cell values keyed by `${row}:${col}`, both 1 based */
   cells: Map<string, string>;
 }
@@ -611,6 +618,70 @@ export class FakeSheets {
         continue;
       }
 
+      if (request.insertDimension) {
+        const { range } = request.insertDimension;
+        const sheet = working.sheets.find((s) => s.sheetId === range?.sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].insertDimension: No sheet with id: ${range?.sheetId}`);
+        const startIndex = range.startIndex ?? 0;
+        const endIndex = range.endIndex ?? startIndex + 1;
+        const length = endIndex - startIndex;
+        if (length < 1) return this.badRequest(`Invalid requests[${index}].insertDimension: endIndex must exceed startIndex.`);
+        if (range.dimension === 'ROWS') {
+          const shifted = new Map<string, string>();
+          for (const [key, value] of sheet.cells) {
+            const [r, c] = key.split(':').map(Number);
+            shifted.set(r > startIndex ? `${r + length}:${c}` : key, value);
+          }
+          sheet.cells = shifted;
+          sheet.rowCount += length;
+        } else if (range.dimension === 'COLUMNS') {
+          const shifted = new Map<string, string>();
+          for (const [key, value] of sheet.cells) {
+            const [r, c] = key.split(':').map(Number);
+            shifted.set(c > startIndex ? `${r}:${c + length}` : key, value);
+          }
+          sheet.cells = shifted;
+          sheet.columnCount += length;
+        } else {
+          return this.badRequest(`Invalid requests[${index}].insertDimension: unknown dimension ${range.dimension}`);
+        }
+        replies.push({});
+        continue;
+      }
+
+      if (request.deleteDimension) {
+        const { range } = request.deleteDimension;
+        const sheet = working.sheets.find((s) => s.sheetId === range?.sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].deleteDimension: No sheet with id: ${range?.sheetId}`);
+        const startIndex = range.startIndex ?? 0;
+        const endIndex = range.endIndex ?? startIndex + 1;
+        const length = endIndex - startIndex;
+        if (length < 1) return this.badRequest(`Invalid requests[${index}].deleteDimension: endIndex must exceed startIndex.`);
+        if (range.dimension === 'ROWS') {
+          const shifted = new Map<string, string>();
+          for (const [key, value] of sheet.cells) {
+            const [r, c] = key.split(':').map(Number);
+            if (r > startIndex && r <= endIndex) continue; // inside the deleted band
+            shifted.set(r > endIndex ? `${r - length}:${c}` : key, value);
+          }
+          sheet.cells = shifted;
+          sheet.rowCount = Math.max(1, sheet.rowCount - length);
+        } else if (range.dimension === 'COLUMNS') {
+          const shifted = new Map<string, string>();
+          for (const [key, value] of sheet.cells) {
+            const [r, c] = key.split(':').map(Number);
+            if (c > startIndex && c <= endIndex) continue;
+            shifted.set(c > endIndex ? `${r}:${c - length}` : key, value);
+          }
+          sheet.cells = shifted;
+          sheet.columnCount = Math.max(1, sheet.columnCount - length);
+        } else {
+          return this.badRequest(`Invalid requests[${index}].deleteDimension: unknown dimension ${range.dimension}`);
+        }
+        replies.push({});
+        continue;
+      }
+
       if (request.updateCells) {
         const { rows, start, range, fields } = request.updateCells;
         if (start && rows) {
@@ -668,11 +739,80 @@ export class FakeSheets {
       }
 
       if (request.updateDimensionProperties) {
+        const { range, properties, fields } = request.updateDimensionProperties;
+        const sheet = working.sheets.find((s) => s.sheetId === range?.sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].updateDimensionProperties: No sheet with id: ${range?.sheetId}`);
+        const fieldList = String(fields ?? '').split(',');
+        const startIndex = range.startIndex ?? 0;
+        const endIndex = range.endIndex ?? startIndex + 1;
+        const bucket = range.dimension === 'ROWS' ? 'rows' : 'columns';
+        if (!sheet.dimensionProps) sheet.dimensionProps = {};
+        if (!sheet.dimensionProps[bucket]) sheet.dimensionProps[bucket] = {};
+        const props = sheet.dimensionProps[bucket] as Record<number, { hiddenByUser?: boolean; pixelSize?: number }>;
+        for (let i = startIndex; i < endIndex; i++) {
+          const key = i + 1; // dimensionProps is keyed 1-based
+          if (!props[key]) props[key] = {};
+          if (fieldList.includes('hiddenByUser') || fieldList.includes('*')) props[key].hiddenByUser = properties?.hiddenByUser;
+          if (fieldList.includes('pixelSize') || fieldList.includes('*')) props[key].pixelSize = properties?.pixelSize;
+        }
+        replies.push({});
+        continue;
+      }
+
+      if (request.autoResizeDimensions) {
         replies.push({});
         continue;
       }
 
       if (request.repeatCell) {
+        replies.push({});
+        continue;
+      }
+
+      if (request.mergeCells) {
+        const { range } = request.mergeCells;
+        const sheet = working.sheets.find((s) => s.sheetId === range?.sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].mergeCells: No sheet with id: ${range?.sheetId}`);
+        const merge = {
+          startRowIndex: range.startRowIndex ?? 0,
+          endRowIndex: range.endRowIndex ?? sheet.rowCount,
+          startColumnIndex: range.startColumnIndex ?? 0,
+          endColumnIndex: range.endColumnIndex ?? sheet.columnCount,
+        };
+        sheet.merges = (sheet.merges || []).filter(
+          (m) =>
+            m.endRowIndex <= merge.startRowIndex ||
+            m.startRowIndex >= merge.endRowIndex ||
+            m.endColumnIndex <= merge.startColumnIndex ||
+            m.startColumnIndex >= merge.endColumnIndex
+        );
+        sheet.merges.push(merge);
+        replies.push({});
+        continue;
+      }
+
+      if (request.unmergeCells) {
+        const { range } = request.unmergeCells;
+        const sheet = working.sheets.find((s) => s.sheetId === range?.sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].unmergeCells: No sheet with id: ${range?.sheetId}`);
+        const bounds = {
+          startRowIndex: range.startRowIndex ?? 0,
+          endRowIndex: range.endRowIndex ?? sheet.rowCount,
+          startColumnIndex: range.startColumnIndex ?? 0,
+          endColumnIndex: range.endColumnIndex ?? sheet.columnCount,
+        };
+        sheet.merges = (sheet.merges || []).filter(
+          (m) =>
+            m.endRowIndex <= bounds.startRowIndex ||
+            m.startRowIndex >= bounds.endRowIndex ||
+            m.endColumnIndex <= bounds.startColumnIndex ||
+            m.startColumnIndex >= bounds.endColumnIndex
+        );
+        replies.push({});
+        continue;
+      }
+
+      if (request.updateBorders) {
         replies.push({});
         continue;
       }
@@ -1112,13 +1252,15 @@ export class FakeSheets {
     const gridProperties: any = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
     if (sheet.frozenRowCount !== undefined) gridProperties.frozenRowCount = sheet.frozenRowCount;
     if (sheet.frozenColumnCount !== undefined) gridProperties.frozenColumnCount = sheet.frozenColumnCount;
-    return {
+    const properties: any = {
       sheetId: sheet.sheetId,
       title: sheet.title,
       index: sheet.index,
       sheetType: 'GRID',
       gridProperties,
     };
+    if (sheet.merges && sheet.merges.length > 0) properties.merges = sheet.merges;
+    return properties;
   }
 
   private renderSpreadsheet(spreadsheet: FakeSpreadsheet): any {

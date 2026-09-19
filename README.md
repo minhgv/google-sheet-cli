@@ -549,6 +549,8 @@ The repository ships an agent skill and an integration guide:
 
 * [`google-sheet auth`](docs/auth.md) - Authenticate with your Google account via OAuth 2.0
 * [`google-sheet data`](docs/data.md) - Manage data in worksheet
+* [`google-sheet format`](docs/format.md) - Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten.
+* [`google-sheet grid`](docs/grid.md) - Delete rows or columns from a worksheet. Data after the deleted range shifts up/left. --dryRun previews the values about to be removed.
 * [`google-sheet help`](docs/help.md) - Display help for google-sheet.
 * [`google-sheet report`](docs/report.md) - Report automation runner and template generation
 * [`google-sheet spreadsheet`](docs/spreadsheet.md) - Manage spreadsheets

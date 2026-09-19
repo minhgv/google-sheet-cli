@@ -25,6 +25,7 @@ import {
   toGoogleNumberFormat,
 } from './sheet-batch';
 import type { ReportCell, ReportDocument, ReportFormula, ReportNumberFormat, ReportSheet } from './report/types';
+import { buildFormatRequests, buildMergeRequest, FormatSpec } from './sheet-format';
 
 export namespace GoogleSheetCli {
   export interface Credentials {
@@ -154,6 +155,106 @@ export namespace GoogleSheetCli {
     freezeRows?: number;
     columnWidths?: { column: number; width: number }[];
     numberFormats?: { column: number; format: string; startRow?: number; endRow?: number }[];
+  }
+
+  export interface FindOptions {
+    worksheetTitle?: string | null;
+    /** A1 range bounding the scan; defaults to the whole worksheet */
+    range?: string;
+    /** exactly one match mode is required */
+    equals?: string;
+    contains?: string;
+    regex?: string;
+    /** restrict matches to one column by A1 letter (e.g. "B") */
+    column?: string;
+    /** restrict matches to the column whose first scanned row equals this header */
+    header?: string;
+    ignoreCase?: boolean;
+    valueRenderOption?: ValueRenderOption;
+    dateTimeRenderOption?: DateTimeRenderOption;
+    /** max matches returned; matchCount still reports the true total */
+    limit?: number;
+    /** collapse matches to unique rows and include full row values */
+    byRow?: boolean;
+  }
+
+  export interface FindMatch {
+    a1: string;
+    row: number;
+    column: number;
+    columnLetter: string;
+    value: string;
+    /** present only when byRow is set: the full scanned row the match sits in */
+    rowValues?: (string | number | boolean | null)[];
+  }
+
+  export interface FindResult {
+    spreadsheetId: string;
+    range: string;
+    matchCount: number;
+    truncated: boolean;
+    matches: FindMatch[];
+  }
+
+  export interface FormatReceipt {
+    spreadsheetId: string;
+    ranges: string[];
+    requestCount: number;
+    fields: string[];
+    dryRun: boolean;
+    /** the exact batchUpdate request bodies; populated on dryRun only */
+    requests?: sheets_v4.Schema$Request[];
+  }
+
+  export interface MergeOptions {
+    worksheetTitle?: string | null;
+    range: string;
+    mergeType?: 'MERGE_ALL' | 'MERGE_COLUMNS' | 'MERGE_ROWS';
+    unmerge?: boolean;
+    dryRun?: boolean;
+  }
+
+  export type Dimension = 'ROWS' | 'COLUMNS';
+
+  export interface DimensionOptions {
+    worksheetTitle?: string | null;
+    dimension: Dimension;
+    /** 1-based first index of the affected dimension */
+    start: number;
+    /** how many rows/columns the operation covers; default 1 */
+    count?: number;
+    /** insertDimension only: inherit formatting from the row/column before instead of after */
+    inheritFromBefore?: boolean;
+    /** hide only: unhide instead of hide */
+    unhide?: boolean;
+    /** resize only: explicit pixel size; mutually exclusive with autoResize */
+    pixels?: number;
+    /** resize only: let Google auto-size to content; mutually exclusive with pixels */
+    autoResize?: boolean;
+    dryRun?: boolean;
+  }
+
+  export interface DimensionReceipt {
+    spreadsheetId: string;
+    worksheetTitle: string;
+    dimension: Dimension;
+    start: number;
+    count: number;
+    requestCount: number;
+    dryRun: boolean;
+    /** the exact batchUpdate request bodies; populated on dryRun only */
+    requests?: sheets_v4.Schema$Request[];
+    /** delete dryRun only: the values about to be removed */
+    affectedValues?: RawData;
+  }
+
+  export interface FreezeOptions {
+    worksheetTitle?: string | null;
+    /** frozen row count; 0 unfreezes rows */
+    rows?: number;
+    /** frozen column count; 0 unfreezes columns */
+    columns?: number;
+    dryRun?: boolean;
   }
 }
 
@@ -1429,6 +1530,397 @@ export default class GoogleSheet {
     if (requests.length > 0) {
       await this.batchUpdateSpreadsheet(requests, spreadsheetId);
     }
+  }
+
+  /**
+   * Locate cells matching a condition and return their A1 coordinates.
+   * Pure read: one values.get over the bounded range, then a client-side scan.
+   * `matchCount` is the true total; `matches` is capped at `limit`.
+   *
+   * @param {GoogleSheetCli.FindOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.FindResult>}
+   * @memberof GoogleSheet
+   */
+  async findData(options: GoogleSheetCli.FindOptions, spreadsheetId?: string): Promise<GoogleSheetCli.FindResult> {
+    const modes = [options.equals !== undefined, options.contains !== undefined, options.regex !== undefined].filter(Boolean).length;
+    if (modes !== 1) {
+      throw new Error('Exactly one match mode is required: equals, contains or regex');
+    }
+    if (options.column !== undefined && options.header !== undefined) {
+      throw new Error('Options "column" and "header" are mutually exclusive');
+    }
+
+    const ignoreCase = options.ignoreCase !== false;
+    // An empty contains/regex needle would match every cell in the range, which
+    // is almost never the intent and floods the result; reject it. An empty
+    // equals needle is meaningful - it locates empty cells - so it stays legal.
+    if (options.contains !== undefined && String(options.contains) === '') {
+      throw new Error('Option "contains" requires a non-empty value');
+    }
+    if (options.regex !== undefined && String(options.regex) === '') {
+      throw new Error('Option "regex" requires a non-empty pattern');
+    }
+    let regex: RegExp | undefined;
+    if (options.regex !== undefined) {
+      try {
+        regex = new RegExp(options.regex, ignoreCase ? 'i' : '');
+      } catch (err) {
+        throw new Error(`Invalid regex "${options.regex}": ${(err as Error).message}`);
+      }
+    }
+
+    const needle = options.equals ?? options.contains;
+    const needleText = needle === undefined ? undefined : ignoreCase ? String(needle).toLowerCase() : String(needle);
+    const needleNumber = options.equals !== undefined && String(needle).trim() !== '' && Number.isFinite(Number(needle)) ? Number(needle) : undefined;
+
+    const matchesCell = (cell: string | number | boolean | null): boolean => {
+      const empty = cell === null || cell === undefined || cell === '';
+      if (empty) return options.equals === '';
+      if (regex) return regex.test(String(cell));
+      if (options.equals !== undefined) {
+        if (needleNumber !== undefined && typeof cell === 'number') return cell === needleNumber;
+        const cellText = ignoreCase ? String(cell).toLowerCase() : String(cell);
+        return cellText === needleText;
+      }
+      const cellText = ignoreCase ? String(cell).toLowerCase() : String(cell);
+      return cellText.includes(needleText as string);
+    };
+
+    const { rawData, range } = await this.getData(
+      {
+        worksheetTitle: options.worksheetTitle,
+        range: options.range,
+        valueRenderOption: options.valueRenderOption,
+        dateTimeRenderOption: options.dateTimeRenderOption,
+        rawOnly: true,
+      },
+      spreadsheetId
+    );
+
+    // The API reports the range it actually returned; coordinates are anchored to it.
+    const parsed = parseStrictA1Range(range || options.range || 'A1');
+    const baseRow = parsed.startRow ?? 1;
+    const baseCol = parsed.startCol ?? 1;
+
+    let restrictCol: number | undefined;
+    let headerRowOffset = 0;
+    if (options.column !== undefined) {
+      restrictCol = a1ToCol(options.column);
+    } else if (options.header !== undefined) {
+      const headerText = ignoreCase ? options.header.toLowerCase() : options.header;
+      const firstRow = rawData[0] || [];
+      const idx = firstRow.findIndex((cell) => {
+        if (cell === null || cell === undefined) return false;
+        const text = ignoreCase ? String(cell).toLowerCase() : String(cell);
+        return text === headerText;
+      });
+      if (idx < 0) {
+        throw new Error(`Header "${options.header}" not found in the first scanned row of ${range}`);
+      }
+      restrictCol = baseCol + idx;
+      headerRowOffset = 1;
+    }
+
+    // An explicit limit is honored as given, including 0 ("count only, return
+    // nothing"); only an absent or negative limit falls back to the default.
+    const limit = options.limit !== undefined && options.limit >= 0 ? options.limit : 100;
+    const all: GoogleSheetCli.FindMatch[] = [];
+    const seenRows = new Set<number>();
+
+    for (let r = headerRowOffset; r < rawData.length; r++) {
+      const row = rawData[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        const absCol = baseCol + c;
+        if (restrictCol !== undefined && absCol !== restrictCol) continue;
+        const cell = row[c];
+        if (!matchesCell(cell)) continue;
+        const absRow = baseRow + r;
+        if (options.byRow) {
+          if (seenRows.has(absRow)) continue;
+          seenRows.add(absRow);
+        }
+        all.push({
+          a1: formatBoundedA1Range(parsed.worksheetTitle || options.worksheetTitle || undefined, absCol, absRow, absCol, absRow),
+          row: absRow,
+          column: absCol,
+          columnLetter: colToA1(absCol),
+          value: String(cell),
+          ...(options.byRow ? { rowValues: row } : {}),
+        });
+      }
+    }
+
+    return {
+      spreadsheetId: spreadsheetId || this.spreadsheetId || '',
+      range: range || options.range || '',
+      matchCount: all.length,
+      truncated: all.length > limit,
+      matches: all.slice(0, limit),
+    };
+  }
+
+  /**
+   * Apply cell formatting (text style, colors, alignment, wrap, number format,
+   * borders) or clear formatting over one or more ranges. The generated field
+   * mask is confined to userEnteredFormat.*, so values cannot be overwritten.
+   * dryRun returns the exact request bodies without sending them.
+   *
+   * @param {FormatSpec} spec
+   * @param {boolean} [dryRun]
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.FormatReceipt>}
+   * @memberof GoogleSheet
+   */
+  async formatCells(spec: FormatSpec, dryRun = false, spreadsheetId?: string): Promise<GoogleSheetCli.FormatReceipt> {
+    if (!spec || !Array.isArray(spec.ranges) || spec.ranges.length === 0) {
+      throw new Error('formatCells requires a non-empty "ranges" array');
+    }
+
+    // Resolve every worksheet title the ranges touch to a sheetId. Ranges without
+    // an explicit title fall back to spec.worksheetTitle, then to the instance's.
+    const defaultTitle = spec.worksheetTitle || this.worksheetTitle || undefined;
+    const titles = new Set<string>();
+    for (const a1 of spec.ranges) {
+      const parsed = parseStrictA1Range(a1);
+      const title = parsed.worksheetTitle ?? defaultTitle;
+      if (!title) {
+        throw new Error(`Range "${a1}" has no worksheet title and no worksheetTitle was provided`);
+      }
+      titles.add(title);
+    }
+
+    const sheetIds = new Map<string, number>();
+    for (const title of titles) {
+      const sheet = await this.getWorksheet(title, spreadsheetId);
+      sheetIds.set(title, sheet.properties?.sheetId ?? 0);
+    }
+    const sheetIdFor = (title: string | undefined): number => {
+      const resolved = title ?? defaultTitle;
+      const id = resolved ? sheetIds.get(resolved) : undefined;
+      if (id === undefined) throw new Error(`Could not resolve worksheet "${resolved}" to a sheetId`);
+      return id;
+    };
+
+    const { requests, fields } = buildFormatRequests(spec, sheetIdFor);
+
+    if (!dryRun) {
+      await this.batchUpdateSpreadsheet(requests, spreadsheetId);
+    }
+
+    return {
+      spreadsheetId: spreadsheetId || this.spreadsheetId || '',
+      ranges: spec.ranges,
+      requestCount: requests.length,
+      fields,
+      dryRun,
+      ...(dryRun ? { requests } : {}),
+    };
+  }
+
+  /**
+   * Merge or unmerge cells over a bounded range.
+   * Google keeps the top-left value on merge; other values in the range are hidden.
+   *
+   * @param {GoogleSheetCli.MergeOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.FormatReceipt>}
+   * @memberof GoogleSheet
+   */
+  async setMerge(options: GoogleSheetCli.MergeOptions, spreadsheetId?: string): Promise<GoogleSheetCli.FormatReceipt> {
+    if (!options || !options.range) {
+      throw new Error('setMerge requires a "range"');
+    }
+    const defaultTitle = options.worksheetTitle || this.worksheetTitle || undefined;
+    const parsed = parseStrictA1Range(options.range);
+    const title = parsed.worksheetTitle ?? defaultTitle;
+    if (!title) {
+      throw new Error(`Range "${options.range}" has no worksheet title and no worksheetTitle was provided`);
+    }
+    const sheet = await this.getWorksheet(title, spreadsheetId);
+    const sheetId = sheet.properties?.sheetId ?? 0;
+
+    const request = buildMergeRequest(options.range, options.mergeType, Boolean(options.unmerge), () => sheetId);
+
+    if (!options.dryRun) {
+      await this.batchUpdateSpreadsheet([request], spreadsheetId);
+    }
+
+    return {
+      spreadsheetId: spreadsheetId || this.spreadsheetId || '',
+      ranges: [options.range],
+      requestCount: 1,
+      fields: [options.unmerge ? 'unmergeCells' : `mergeCells.${options.mergeType || 'MERGE_ALL'}`],
+      dryRun: Boolean(options.dryRun),
+      ...(options.dryRun ? { requests: [request] } : {}),
+    };
+  }
+
+  /**
+   * Structural dimension mutation: insert, delete, hide/unhide, or resize rows/columns.
+   * One batchUpdate request per call. `start`/`count` are 1-based inclusive on the
+   * CLI and converted to the API's 0-based, end-exclusive DimensionRange here.
+   *
+   * @param {'insert'|'delete'|'hide'|'resize'} action
+   * @param {GoogleSheetCli.DimensionOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.DimensionReceipt>}
+   * @memberof GoogleSheet
+   */
+  async mutateDimension(
+    action: 'insert' | 'delete' | 'hide' | 'resize',
+    options: GoogleSheetCli.DimensionOptions,
+    spreadsheetId?: string
+  ): Promise<GoogleSheetCli.DimensionReceipt> {
+    if (!options || (options.dimension !== 'ROWS' && options.dimension !== 'COLUMNS')) {
+      throw new Error('mutateDimension requires dimension "ROWS" or "COLUMNS"');
+    }
+    const count = options.count ?? 1;
+    if (!Number.isInteger(options.start) || options.start < 1) {
+      throw new Error(`mutateDimension requires a 1-based start >= 1, got "${options.start}"`);
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`mutateDimension requires a count >= 1, got "${count}"`);
+    }
+    if (action === 'resize') {
+      if (options.pixels !== undefined && options.autoResize) {
+        throw new Error('resize accepts either "pixels" or "autoResize", not both');
+      }
+      if (options.pixels === undefined && !options.autoResize) {
+        throw new Error('resize requires either "pixels" or "autoResize"');
+      }
+      if (options.pixels !== undefined && (!Number.isFinite(options.pixels) || options.pixels <= 0)) {
+        throw new Error(`resize requires a positive pixel size, got "${options.pixels}"`);
+      }
+    }
+
+    const title = options.worksheetTitle || this.worksheetTitle || undefined;
+    if (!title) {
+      throw new Error('Option property "worksheetTitle" is required');
+    }
+    const sheet = await this.getWorksheet(title, spreadsheetId);
+    const sheetId = sheet.properties?.sheetId ?? 0;
+
+    // 1-based inclusive CLI -> 0-based, end-exclusive API
+    const dimensionRange: sheets_v4.Schema$DimensionRange = {
+      sheetId,
+      dimension: options.dimension,
+      startIndex: options.start - 1,
+      endIndex: options.start - 1 + count,
+    };
+
+    let request: sheets_v4.Schema$Request;
+    if (action === 'insert') {
+      request = { insertDimension: { range: dimensionRange, inheritFromBefore: Boolean(options.inheritFromBefore) } };
+    } else if (action === 'delete') {
+      request = { deleteDimension: { range: dimensionRange } };
+    } else if (action === 'hide') {
+      request = {
+        updateDimensionProperties: {
+          range: dimensionRange,
+          properties: { hiddenByUser: !options.unhide },
+          fields: 'hiddenByUser',
+        },
+      };
+    } else if (options.autoResize) {
+      request = { autoResizeDimensions: { dimensions: dimensionRange } };
+    } else {
+      request = {
+        updateDimensionProperties: {
+          range: dimensionRange,
+          properties: { pixelSize: options.pixels },
+          fields: 'pixelSize',
+        },
+      };
+    }
+
+    // A delete dry-run previews the values about to be lost - the only preview
+    // that matters for a destructive op.
+    let affectedValues: GoogleSheetCli.RawData | undefined;
+    if (action === 'delete' && options.dryRun) {
+      const dataOptions: GoogleSheetCli.QueryOptions =
+        options.dimension === 'ROWS'
+          ? { worksheetTitle: title, minRow: options.start, maxRow: options.start + count - 1, rawOnly: true }
+          : { worksheetTitle: title, minCol: options.start, maxCol: options.start + count - 1, rawOnly: true };
+      const { rawData } = await this.getData(dataOptions, spreadsheetId);
+      affectedValues = rawData;
+    }
+
+    if (!options.dryRun) {
+      await this.batchUpdateSpreadsheet([request], spreadsheetId);
+    }
+
+    return {
+      spreadsheetId: spreadsheetId || this.spreadsheetId || '',
+      worksheetTitle: title,
+      dimension: options.dimension,
+      start: options.start,
+      count,
+      requestCount: 1,
+      dryRun: Boolean(options.dryRun),
+      ...(options.dryRun ? { requests: [request] } : {}),
+      ...(affectedValues !== undefined ? { affectedValues } : {}),
+    };
+  }
+
+  /**
+   * Freeze or unfreeze rows/columns on a worksheet.
+   * At least one of rows/columns is required; 0 unfreezes that axis.
+   *
+   * @param {GoogleSheetCli.FreezeOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.FormatReceipt>}
+   * @memberof GoogleSheet
+   */
+  async setFrozen(options: GoogleSheetCli.FreezeOptions, spreadsheetId?: string): Promise<GoogleSheetCli.FormatReceipt> {
+    const hasRows = options?.rows !== undefined;
+    const hasCols = options?.columns !== undefined;
+    if (!hasRows && !hasCols) {
+      throw new Error('setFrozen requires at least one of "rows" or "columns"');
+    }
+    for (const [name, value] of [['rows', options.rows], ['columns', options.columns]] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+        throw new Error(`setFrozen "${name}" must be an integer >= 0, got "${value}"`);
+      }
+    }
+
+    const title = options.worksheetTitle || this.worksheetTitle || undefined;
+    if (!title) {
+      throw new Error('Option property "worksheetTitle" is required');
+    }
+    const sheet = await this.getWorksheet(title, spreadsheetId);
+    const sheetId = sheet.properties?.sheetId ?? 0;
+
+    const gridProperties: sheets_v4.Schema$GridProperties = {};
+    const fields: string[] = [];
+    if (hasRows) {
+      gridProperties.frozenRowCount = options.rows;
+      fields.push('gridProperties.frozenRowCount');
+    }
+    if (hasCols) {
+      gridProperties.frozenColumnCount = options.columns;
+      fields.push('gridProperties.frozenColumnCount');
+    }
+
+    const request: sheets_v4.Schema$Request = {
+      updateSheetProperties: {
+        properties: { sheetId, gridProperties },
+        fields: fields.join(','),
+      },
+    };
+
+    if (!options.dryRun) {
+      await this.batchUpdateSpreadsheet([request], spreadsheetId);
+    }
+
+    return {
+      spreadsheetId: spreadsheetId || this.spreadsheetId || '',
+      ranges: [title],
+      requestCount: 1,
+      fields,
+      dryRun: Boolean(options.dryRun),
+      ...(options.dryRun ? { requests: [request] } : {}),
+    };
   }
 
   /**

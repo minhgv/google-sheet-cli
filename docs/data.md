@@ -7,6 +7,7 @@ Manage data in worksheet
 * [`google-sheet data:append-table [DATA]`](#google-sheet-dataappend-table-data)
 * [`google-sheet data:batch-get`](#google-sheet-databatch-get)
 * [`google-sheet data:batch-update [DATA]`](#google-sheet-databatch-update-data)
+* [`google-sheet data:find`](#google-sheet-datafind)
 * [`google-sheet data:get`](#google-sheet-dataget)
 * [`google-sheet data:update [DATA]`](#google-sheet-dataupdate-data)
 
@@ -218,6 +219,79 @@ EXAMPLES
 ```
 
 _See code: [src/commands/data/batch-update.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/batch-update.ts)_
+
+## `google-sheet data:find`
+
+Locate cells matching a condition and return their A1 coordinates. Pure read: scans the range once and reports where matches live, so follow-up writes can target exact cells without downloading the whole sheet.
+
+```
+USAGE
+  $ google-sheet data:find -s <value> -t <value> [-h] [-r] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
+    [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>] [--output csv|json|yaml |
+    | [--csv | --no-truncate]] [--no-header | ] [--range <value>] [--equals <value> | --contains <value> | --regex
+    <value>] [--column <value> | --header <value>] [--ignoreCase] [--valueRenderOption
+    FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA] [--dateTimeRenderOption FORMATTED_STRING|SERIAL_NUMBER] [--limit <value>]
+    [--first] [--byRow]
+
+FLAGS
+  -h, --help                           Show CLI help.
+  -r, --rawOutput                      Get the raw output as a JSON string
+  -s, --spreadsheetId=<value>          (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
+  -t, --worksheetTitle=<value>         (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
+  -x, --extended                       show extra columns
+      --byRow                          Collapse matches to unique rows and include full row values
+      --column=<value>                 Restrict matches to one column by A1 letter (e.g. "B")
+      --columns=<value>                only show provided columns (comma-separated)
+      --contains=<value>               Match cells containing this substring
+      --csv                            output is csv format [alias: --output=csv]
+      --dateTimeRenderOption=<option>  [default: FORMATTED_STRING] Determines how dates, times, and durations are
+                                       rendered before matching
+                                       <options: FORMATTED_STRING|SERIAL_NUMBER>
+      --equals=<value>                 Match cells exactly equal to this value
+      --filter=<value>                 filter property by partial string matching, ex: name=foo
+      --first                          Return only the first match (alias for --limit=1)
+      --header=<value>                 Restrict matches to the column whose first scanned row equals this header text
+      --[no-]ignoreCase                Case-insensitive matching
+      --limit=<value>                  [default: 100] Maximum matches to return (matchCount still reports the true
+                                       total)
+      --no-header                      hide table header from output
+      --no-truncate                    do not truncate output to fit screen
+      --output=<option>                output in a more machine friendly format
+                                       <options: csv|json|yaml>
+      --range=<value>                  The A1 range bounding the scan (default: whole worksheet)
+      --regex=<value>                  Match cells against this regular expression
+      --sort=<value>                   property to sort by (prepend '-' for descending)
+      --valueRenderOption=<option>     [default: FORMATTED_VALUE] Determines how cell values are rendered before
+                                       matching
+                                       <options: FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA>
+
+AUTHENTICATION FLAGS
+  -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
+                                  GSHEET_CLIENT_EMAIL env variable if not provided.
+  -f, --credentialsFile=<value>   [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
+                                  credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
+                                  clientEmail and privateKey flags take precedence.
+  -p, --privateKey=<value>        [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
+                                  GSHEET_PRIVATE_KEY env variable if not provided.
+      --clientSecretFile=<value>  [env: GSHEET_CLIENT_SECRET_FILE] Path to OAuth 2.0 client_secret.json (Desktop App
+                                  type)
+      --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
+
+DESCRIPTION
+  Locate cells matching a condition and return their A1 coordinates. Pure read: scans the range once and reports where
+  matches live, so follow-up writes can target exact cells without downloading the whole sheet.
+
+EXAMPLES
+  $ gsheet data:find --spreadsheetId=<id> --worksheetTitle=T1 --equals="NV0123" --column=B --first --rawOutput
+
+  $ gsheet data:find --spreadsheetId=<id> --worksheetTitle=T1 --contains="invoice" --byRow
+
+  $ gsheet data:find --spreadsheetId=<id> --worksheetTitle=T1 --regex="^ERR-" --range=A1:K200
+
+  $ gsheet data:find --spreadsheetId=<id> --worksheetTitle=T1 --equals="Paid" --header="Status"
+```
+
+_See code: [src/commands/data/find.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/find.ts)_
 
 ## `google-sheet data:get`
 

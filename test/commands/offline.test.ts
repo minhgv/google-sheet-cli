@@ -122,6 +122,69 @@ class StubGoogleSheet {
       formulasOverwritten: 0,
     };
   }
+
+  async findData(options: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'findData', args: [options, spreadsheetId] });
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      range: `${WORKSHEET_TITLE}!A1:Z1000`,
+      matchCount: 1,
+      truncated: false,
+      matches: [{ a1: `${WORKSHEET_TITLE}!B2`, row: 2, column: 2, columnLetter: 'B', value: 'B2' }],
+    };
+  }
+
+  async formatCells(spec: unknown, dryRun?: boolean, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'formatCells', args: [spec, dryRun, spreadsheetId] });
+    const typed = spec as { ranges?: string[] };
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      ranges: typed.ranges || [],
+      requestCount: 1,
+      fields: ['userEnteredFormat.textFormat.bold'],
+      dryRun: Boolean(dryRun),
+      ...(dryRun ? { requests: [{ repeatCell: { fields: 'userEnteredFormat.textFormat.bold' } }] } : {}),
+    };
+  }
+
+  async setMerge(options: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'setMerge', args: [options, spreadsheetId] });
+    const typed = options as { range?: string; unmerge?: boolean; dryRun?: boolean };
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      ranges: [typed.range || ''],
+      requestCount: 1,
+      fields: [typed.unmerge ? 'unmergeCells' : 'mergeCells.MERGE_ALL'],
+      dryRun: Boolean(typed.dryRun),
+    };
+  }
+
+  async mutateDimension(action: string, options: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'mutateDimension', args: [action, options, spreadsheetId] });
+    const typed = options as { worksheetTitle?: string; dimension?: string; start?: number; count?: number; dryRun?: boolean };
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      worksheetTitle: typed.worksheetTitle || WORKSHEET_TITLE,
+      dimension: typed.dimension || 'ROWS',
+      start: typed.start || 1,
+      count: typed.count || 1,
+      requestCount: 1,
+      dryRun: Boolean(typed.dryRun),
+      ...(typed.dryRun ? { requests: [{ insertDimension: {} }] } : {}),
+    };
+  }
+
+  async setFrozen(options: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'setFrozen', args: [options, spreadsheetId] });
+    const typed = options as { dryRun?: boolean };
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      ranges: [WORKSHEET_TITLE],
+      requestCount: 1,
+      fields: ['gridProperties.frozenRowCount'],
+      dryRun: Boolean(typed.dryRun),
+    };
+  }
 }
 
 // The namespace object is typed read-only; the module itself is a plain CommonJS export that a
@@ -362,6 +425,134 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--overwriteFormulas',
     ],
     skipAuthFlags: true,
+  },
+  {
+    id: 'data:find',
+    usage: '$ google-sheet data:find -t <value> -s <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--range=<value>',
+      '--equals=<value>',
+      '--contains=<value>',
+      '--regex=<value>',
+      '--column=<value>',
+      '--header=<value>',
+      '--ignoreCase',
+      '--valueRenderOption=<option> [default: FORMATTED_VALUE]',
+      '--dateTimeRenderOption=<option> [default: FORMATTED_STRING]',
+      '--limit=<value> [default: 100]',
+      '--first',
+      '--byRow',
+    ],
+  },
+  {
+    id: 'format:cells',
+    usage: '$ google-sheet format:cells -t <value> -s <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--range=<value>',
+      '--bold',
+      '--italic',
+      '--underline',
+      '--strikethrough',
+      '--fontSize=<value>',
+      '--fontFamily=<value>',
+      '--textColor=<value>',
+      '--backgroundColor=<value>',
+      '--horizontalAlignment=<option>',
+      '<options: LEFT|CENTER|RIGHT>',
+      '--verticalAlignment=<option>',
+      '<options: TOP|MIDDLE|BOTTOM>',
+      '--wrapStrategy=<option>',
+      '<options: OVERFLOW_CELL|CLIP|WRAP>',
+      '--numberFormat=<value>',
+      '--numberFormatType=<option>',
+      '--borders=<value>',
+      '--borderStyle=<option> [default: SOLID]',
+      '--borderColor=<value> [default: #000000]',
+      '--clear',
+      '-i, --input=<value>',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'format:merge',
+    usage: '$ google-sheet format:merge -t <value> -s <value> --range <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--range=<value> (required)',
+      '--type=<option> [default: MERGE_ALL]',
+      '<options: MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS>',
+      '--unmerge',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'grid:insert',
+    usage: '$ google-sheet grid:insert -t <value> -s <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--dimension=<option> (required)',
+      '<options: ROWS|COLUMNS>',
+      '--start=<value> (required)',
+      '--count=<value> [default: 1]',
+      '--inheritFromBefore',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'grid:delete',
+    usage: '$ google-sheet grid:delete -t <value> -s <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--dimension=<option> (required)',
+      '--start=<value> (required)',
+      '--count=<value> [default: 1]',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'grid:hide',
+    usage: '$ google-sheet grid:hide -t <value> -s <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--dimension=<option> (required)',
+      '--start=<value> (required)',
+      '--count=<value> [default: 1]',
+      '--unhide',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'grid:resize',
+    usage: '$ google-sheet grid:resize -t <value> -s <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--dimension=<option> (required)',
+      '--start=<value> (required)',
+      '--count=<value> [default: 1]',
+      '--pixels=<value>',
+      '--auto',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'grid:freeze',
+    usage: '$ google-sheet grid:freeze -t <value> -s <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--rows=<value>',
+      '--columns=<value>',
+      '--dryRun',
+    ],
   },
 ];
 
@@ -615,6 +806,149 @@ describe('offline commands', () => {
       expect(stub.calls[1].args[2]).to.equal(SPREADSHEET_ID);
       expect(result).to.have.property('updatedRows', 1);
       expect(JSON.parse(stdout)).to.have.property('updatedRows', 1);
+    });
+  });
+
+  describe('data:find', () => {
+    it('rejects two match modes before any Sheets call', async () => {
+      const { error } = await runCommand([
+        'data:find',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--equals=a',
+        '--contains=b',
+      ]);
+      expect(error, 'data:find should have failed').to.not.be.undefined;
+      expect(stub.calls).to.eql([]);
+    });
+
+    it('rejects --column with --header before any Sheets call', async () => {
+      const { error } = await runCommand([
+        'data:find',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--equals=a',
+        '--column=B',
+        '--header=Status',
+      ]);
+      expect(error, 'data:find should have failed').to.not.be.undefined;
+      expect(stub.calls).to.eql([]);
+    });
+
+    it('returns coordinates JSON for --rawOutput', async () => {
+      const { error, result, stdout } = await runCommand([
+        'data:find',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--equals=B2',
+        '--rawOutput',
+      ]);
+      if (error) throw error;
+
+      expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'findData']);
+      const parsed = JSON.parse(stdout);
+      expect(parsed.matchCount).to.equal(1);
+      expect(parsed.matches[0].a1).to.equal(`${WORKSHEET_TITLE}!B2`);
+      expect(result).to.have.property('matchCount', 1);
+    });
+  });
+
+  describe('format:cells', () => {
+    it('rejects --clear combined with a style flag', async () => {
+      const { error } = await runCommand([
+        'format:cells',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--range=A1:B2',
+        '--clear',
+        '--bold',
+      ]);
+      expect(error, 'format:cells should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--clear');
+      // authorize ran in init(), but the format call must not have
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('formatCells');
+    });
+
+    it('rejects --input combined with a style flag', async () => {
+      const { error } = await runCommand([
+        'format:cells',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--input=spec.json',
+        '--bold',
+      ]);
+      expect(error, 'format:cells should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--input');
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('formatCells');
+    });
+
+    it('requires --range when no --input is given', async () => {
+      const { error } = await runCommand([
+        'format:cells',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--bold',
+      ]);
+      expect(error, 'format:cells should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--range');
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('formatCells');
+    });
+
+    it('sends a dry-run preview for --rawOutput --dryRun', async () => {
+      const { error, result, stdout } = await runCommand([
+        'format:cells',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--range=A1:B2',
+        '--bold',
+        '--dryRun',
+        '--rawOutput',
+      ]);
+      if (error) throw error;
+
+      expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'formatCells']);
+      const parsed = JSON.parse(stdout);
+      expect(parsed.dryRun).to.equal(true);
+      expect(parsed.fields).to.contain('userEnteredFormat.textFormat.bold');
+      expect(result).to.have.property('dryRun', true);
+    });
+  });
+
+  describe('format:merge', () => {
+    it('rejects --type combined with --unmerge', async () => {
+      const { error } = await runCommand([
+        'format:merge',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--range=A1:B2',
+        '--type=MERGE_ROWS',
+        '--unmerge',
+      ]);
+      expect(error, 'format:merge should have failed').to.not.be.undefined;
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('setMerge');
+    });
+
+    it('merges a range through the stub', async () => {
+      const { error, result } = await runCommand([
+        'format:merge',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--range=A1:B2',
+        '--rawOutput',
+      ]);
+      if (error) throw error;
+
+      expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'setMerge']);
+      expect(result).to.have.property('requestCount', 1);
     });
   });
 
