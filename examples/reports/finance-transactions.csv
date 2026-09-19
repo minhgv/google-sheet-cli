@@ -1,0 +1,16 @@
+id,date,account,direction,amount,currency,description,category,isRefund
+TX-2026-001,2026-01-05,Operating Account (Chase 0412),in,45000.00,USD,Enterprise Client SaaS Subscription,Revenue,false
+TX-2026-002,2026-01-08,Operating Account (Chase 0412),out,12500.00,USD,Cloud Infrastructure AWS Invoice,Hosting,false
+TX-2026-003,2026-01-12,Investment Treasury (SVB 9823),out,35000.00,USD,Quarterly Equipment Capital Expenditure,Hardware,false
+TX-2026-004,2026-01-18,APAC Regional Account (VCB 8892),in,500000000,VND,Local Partner Integration Licensing,Revenue,false
+TX-2026-005,2026-01-22,Operating Account (Chase 0412),in,15000.00,EUR,European Consulting Retainer,Consulting,false
+TX-2026-006,2026-01-29,Operating Account (Chase 0412),out,2200.00,USD,Overpaid Service Fee Refund,Operations,true
+TX-2026-007,2026-02-03,Operating Account (Chase 0412),in,38000.00,USD,Mid-Market Tier Annual Contracts,Revenue,false
+TX-2026-008,2026-02-10,APAC Regional Account (VCB 8892),in,450000000,VND,APAC Support Contract Renewal,Revenue,false
+TX-2026-009,2026-02-14,Operating Account (Chase 0412),out,14800.00,USD,Office Lease & Utilities Payment,Facilities,false
+TX-2026-010,2026-02-20,Operating Account (Chase 0412),in,12000.00,GBP,UK Fintech Integration Service,Consulting,false
+TX-2026-011,2026-02-26,APAC Regional Account (VCB 8892),out,220000000,VND,Local Payroll & Office Expenses,Payroll,false
+TX-2026-012,2026-03-04,Operating Account (Chase 0412),in,28000.00,USD,Expansion License Milestone,Revenue,false
+TX-2026-013,2026-03-12,Operating Account (Chase 0412),out,8500.00,USD,Marketing Campaign & Event Sponsorship,Marketing,false
+TX-2026-014,2026-03-19,APAC Regional Account (VCB 8892),in,600000000,VND,Southeast Asia Distributor Settlement,Revenue,false
+TX-2026-015,2026-03-25,Operating Account (Chase 0412),out,3500.00,EUR,European Contractor Development Services,Contractors,false

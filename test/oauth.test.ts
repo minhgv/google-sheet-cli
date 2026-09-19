@@ -1,19 +1,29 @@
 import { expect } from 'chai';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
-import {
+const os = require('os');
+const originalHomedir = os.homedir;
+const originalHomeEnv = process.env.HOME;
+
+const TEST_HOME = join(__dirname, '..', 'tmp', 'test-oauth-home');
+os.homedir = () => TEST_HOME;
+process.env.HOME = TEST_HOME;
+
+// Clear require cache to ensure oauth initializes with the stubbed homedir
+delete require.cache[require.resolve('../src/lib/oauth')];
+const {
   loadTokens,
   saveTokens,
   deleteTokens,
   readClientSecret,
   isTokenExpired,
-  OAuthTokens,
-} from '../src/lib/oauth';
-
-const CONFIG_DIR = join(homedir(), '.config', 'google-sheet-cli');
-const TEST_TOKEN_PATH = join(CONFIG_DIR, 'token.json');
-const TEST_CLIENT_SECRET_PATH = join(CONFIG_DIR, 'client_secret.json');
+  TOKEN_PATH,
+  CLIENT_SECRET_PATH,
+} = require('../src/lib/oauth');
+import type { OAuthTokens } from '../src/lib/oauth';
+const CONFIG_DIR = join(TEST_HOME, '.config', 'google-sheet-cli');
+const TEST_TOKEN_PATH = TOKEN_PATH;
+const TEST_CLIENT_SECRET_PATH = CLIENT_SECRET_PATH;
 
 const VALID_TOKENS: OAuthTokens = {
   access_token: 'test-access-token',
@@ -32,13 +42,25 @@ const VALID_CLIENT_SECRET = {
     token_uri: 'https://oauth2.googleapis.com/token',
   },
 };
-
 describe('oauth', () => {
   before(() => {
     if (!existsSync(CONFIG_DIR)) {
       mkdirSync(CONFIG_DIR, { recursive: true });
     }
   });
+  after(() => {
+    os.homedir = originalHomedir;
+    if (originalHomeEnv !== undefined) {
+      process.env.HOME = originalHomeEnv;
+    } else {
+      delete process.env.HOME;
+    }
+    delete require.cache[require.resolve('../src/lib/oauth')];
+    if (existsSync(TEST_HOME)) {
+      rmSync(TEST_HOME, { recursive: true, force: true });
+    }
+  });
+
 
   afterEach(() => {
     if (existsSync(TEST_TOKEN_PATH)) rmSync(TEST_TOKEN_PATH);

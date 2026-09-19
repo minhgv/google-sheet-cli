@@ -185,6 +185,18 @@ These arrived in 2.3.0, not in 3.0.0, so they are new only to someone upgrading 
   - [Changes in 2.3.0](#changes-in-230)
   - [Usage as CLI](#usage-as-cli)
   - [Usage as library](#usage-as-library)
+    - [Google Sheets Client (`google-sheet-cli/sheet`)](#google-sheets-client-google-sheet-clisheet)
+    - [Local Excel Workbook Engine (`google-sheet-cli/xlsx`)](#local-excel-workbook-engine-google-sheet-clixlsx)
+    - [Report Core Engine & Transforms (`google-sheet-cli/report`)](#report-core-engine--transforms-google-sheet-clireport)
+  - [Data Operations & Automation Guide](#data-operations--automation-guide)
+    - [Data Input: Positional JSON, CSV/JSON Files, and Stdin](#data-input-positional-json-csvjson-files-and-stdin)
+    - [Read Render Options](#read-render-options)
+    - [Batch Operations & Native Append Table vs Legacy Semantics](#batch-operations--native-append-table-vs-legacy-semantics)
+    - [Local Excel (XLSX) Workbooks: Inspect, Read, and Safe Write](#local-excel-xlsx-workbooks-inspect-read-and-safe-write)
+    - [Report Automation (`report:run`)](#report-automation-reportrun)
+    - [Authentication Behavior: Cloud vs Local](#authentication-behavior-cloud-vs-local)
+    - [Report Templates: Schemas, Policies, and Transforms](#report-templates-schemas-policies-and-transforms)
+    - [Technical Invariants, Safety Guarantees, and Domain Policies](#technical-invariants-safety-guarantees-and-domain-policies)
 - [Command Topics](#command-topics)
 - [Info](#info)
   - [How to configure](#how-to-configure)
@@ -196,7 +208,6 @@ These arrived in 2.3.0, not in 3.0.0, so they are new only to someone upgrading 
   - [Versioning](#versioning)
   - [License](#license)
   - [TODO](#todo)
-
 ## Usage as CLI
 <!-- usage -->
 ```sh-session
@@ -214,8 +225,314 @@ USAGE
 
 ## Usage as library
 
-You can import the GoogleSheet class as a module and use it without the cli functionality.
-_See code: [src/lib/google-sheet.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/lib/google-sheet.ts)_
+The package exposes focused subpaths through its `exports` map, allowing you to import exactly what you need without pulling unnecessary runtime dependencies into your bundle.
+
+### Google Sheets Client (`google-sheet-cli/sheet`)
+
+A side-effect-free client for interacting directly with the Google Sheets v4 API. It contains zero CLI framework (`@oclif/core`) or Excel workbook (`exceljs`) dependencies:
+
+```ts
+import GoogleSheet from 'google-sheet-cli/sheet';
+
+const sheet = new GoogleSheet({
+  spreadsheetId: '<spreadsheetId>',
+  clientEmail: process.env.GSHEET_CLIENT_EMAIL,
+  privateKey: process.env.GSHEET_PRIVATE_KEY,
+});
+
+// Read rows with structured rendering
+const { rawData, formatted, header, range } = await sheet.getData({
+  worksheetTitle: 'Sheet1',
+  minRow: 1,
+  minCol: 1,
+  valueRenderOption: 'UNFORMATTED_VALUE',
+});
+
+// Batch read multiple disjoint ranges in one API call
+const batchResults = await sheet.getDataBatch(
+  ['Sheet1!A1:B10', 'Sheet2!C1:D5'],
+  { valueRenderOption: 'FORMATTED_VALUE' }
+);
+
+// Append data using native Google Sheets table append
+await sheet.appendTableData(
+  [['2026-03-15', 'Hosting', 120.00]],
+  { worksheetTitle: 'Transactions' }
+);
+```
+
+### Local Excel Workbook Engine (`google-sheet-cli/xlsx`)
+
+An ExcelJS-backed adapter providing local `.xlsx` workbook manipulation, structural preflight inspection, formula freshness tracking, range reads/writes, diff generation, and safe atomic persistence:
+
+```ts
+import { XlsxWorkbook } from 'google-sheet-cli/xlsx';
+// 1. Load existing workbook or create a new empty one
+const workbook = await XlsxWorkbook.load('./templates/financial-model.xlsx');
+
+// 2. Inspect workbook structure, sheets, defined names, and capabilities
+const preflight = workbook.inspect();
+console.log('Sheets found:', preflight.sheets.map(s => s.name));
+console.log('Can evaluate formulas:', preflight.capabilities.canRecalculateFormulas);
+
+// 3. Read specific range with formula awareness
+const rangeData = workbook.read('Summary!A1:D10', {
+  mode: 'unformatted',
+});
+console.log('Cell values:', rangeData.values);
+console.log('Formula freshness:', rangeData.freshnessSummary);
+
+// 4. Preview diff before writing (or apply directly)
+const diff = workbook.preview(reportDoc, { overwriteFormulas: false });
+console.log(`Planned cell changes: ${diff.changes.length}, conflicts: ${diff.conflicts.length}`);
+
+const result = workbook.apply(reportDoc, { overwriteFormulas: false });
+console.log(`Applied changes: ${result.appliedChanges}`);
+
+// 5. Save changes safely with atomic write and automatic backup
+await workbook.save('./output/financial-model-q1.xlsx', {
+  overwrite: true,
+  backup: true,
+});
+```
+
+### Report Core Engine & Transforms (`google-sheet-cli/report`)
+
+A pure, synchronous report transformation engine that validates schemas, executes declarative pipelines, and generates deterministic report models:
+
+```ts
+import { buildReport } from 'google-sheet-cli/report';
+
+const template = {
+  id: 'sales-summary-v1',
+  version: 1,
+  kind: 'table' as const,
+  title: 'Quarterly Sales Summary',
+  schema: {
+    fields: [
+      { name: 'region', type: 'string' as const, required: true },
+      { name: 'revenue', type: 'decimal' as const, required: true, min: 0 },
+    ],
+  },
+  transforms: [
+    {
+      kind: 'aggregate' as const,
+      groupBy: ['region'],
+      aggregations: [{ field: 'revenue', op: 'sum' as const, as: 'total_revenue' }],
+    },
+  ],
+  outputs: [
+    {
+      name: 'Regional Summary',
+      columns: [
+        { header: 'Region', field: 'region' },
+        { header: 'Total Revenue', field: 'total_revenue' },
+      ],
+    },
+  ],
+};
+
+const rawData = [
+  { region: 'North America', revenue: '12500.50' },
+  { region: 'North America', revenue: '8200.00' },
+  { region: 'Europe', revenue: '14300.25' },
+];
+
+// Generate report document with deterministic SHA-256 source hash
+const reportDoc = buildReport(template, rawData);
+console.log('Source Hash:', reportDoc.provenance.sourceHash);
+console.log('Worksheet Rows:', reportDoc.sheets[0].rows);
+```
+
+---
+
+## Data Operations & Automation Guide
+
+### Data Input: Positional JSON, CSV/JSON Files, and Stdin
+
+Commands accepting tabular datasets (`data:append`, `data:update`, `data:append-table`, `data:batch-update`, `workbook:write`, `report:run`) support three flexible input mechanisms:
+
+1. **Positional JSON argument (inline arrays):**
+   ```sh-session
+   $ google-sheet data:append '[["2026-03-01", "Hardware", "1450.00"], ["2026-03-02", "Software", "299.00"]]' -t Expenses -s <spreadsheetId>
+   ```
+2. **Input file (`--input` / `-i`):**
+   Pass a path to a `.csv` or `.json` file. The format is automatically inferred from the file extension:
+   ```sh-session
+   $ google-sheet data:append-table -i ./data/march-sales.csv -t Sales -s <spreadsheetId>
+   ```
+3. **Standard Input (`-i -`):**
+   Stream data directly via stdin. When piping CSV data, pass `--inputFormat csv`:
+   ```sh-session
+   $ cat ./transactions.csv | google-sheet data:update -i - --inputFormat csv --range 'Sheet1!A2:C100' -s <spreadsheetId>
+   ```
+
+### Read Render Options
+
+When reading data from Google Sheets (`data:get`, `data:batch-get`) or local Excel workbooks (`workbook:read`), you can control how cell values, dates, and formula outputs are extracted:
+
+* **`--valueRenderOption` (Google Sheets API):**
+  * `FORMATTED_VALUE` *(default)*: Returns cell values formatted according to spreadsheet rules (e.g. `"$1,234.50"`, `"25.0%"`).
+  * `UNFORMATTED_VALUE`: Returns raw scalar numbers, booleans, and strings without display formatting (e.g. `1234.5`, `0.25`).
+  * `FORMULA`: Returns the formula text itself (e.g. `"=SUM(A1:A10)"`) rather than the evaluated result.
+* **`--dateTimeRenderOption` (Google Sheets API):**
+  * `SERIAL_NUMBER`: Returns dates as standard spreadsheet serial day numbers (e.g. `46098.5`).
+  * `FORMATTED_STRING`: Returns dates as localized text strings matching cell formatting.
+* **`--mode` (Local Excel `workbook:read`):**
+  * `unformatted` *(default)*: Extracts underlying raw scalar values.
+  * `formatted`: Extracts text representations as rendered by Excel format masks.
+  * `formula`: Extracts formula expressions.
+
+### Batch Operations & Native Append Table vs Legacy Semantics
+
+#### Multi-Range Batch Reading and Updating
+
+To minimize API round-trips and avoid quota throttling, use batch operations:
+
+* **`data:batch-get`:** Fetches multiple disjoint ranges across one or more worksheets in a single API request:
+  ```sh-session
+  $ google-sheet data:batch-get --ranges '["Summary!A1:B5", "Transactions!A1:D50"]' -s <spreadsheetId>
+  ```
+* **`data:batch-update`:** Applies multiple range updates atomically in a single batch request:
+  ```sh-session
+  $ google-sheet data:batch-update -i ./batch-payload.json -s <spreadsheetId>
+  ```
+  *(Payload format: `[{"range": "Summary!B2", "values": [[100]]}, {"range": "Audit!A1:B2", "values": [["Status", "OK"]]}]`)*
+
+#### `data:append-table` vs `data:append`
+
+* **`data:append-table` (Recommended for structured tables):** Calls Google Sheets API's native `POST /values/{range}:append`. It scans for existing table boundaries, locates the true end of the tabular data, and appends rows directly to the table without scanning the entire worksheet grid. This preserves empty buffer rows and allows multiple tables to coexist on a single sheet.
+* **`data:append` (Legacy bounding box append):** Reads the worksheet grid (`getData`), computes the overall bounding box (`maxRow`), and writes to row `maxRow + 1`.
+
+### Local Excel (XLSX) Workbooks: Inspect, Read, and Safe Write
+
+Manage local `.xlsx` files without Google Cloud credentials or network calls:
+
+#### 1. Preflight Inspection (`workbook:inspect`)
+
+Audit workbook health, sheet names, defined names, comments, and check for unsupported binary features before running automation:
+
+```sh-session
+$ google-sheet workbook:inspect -f ./templates/budget-template.xlsx
+```
+
+#### 2. Range Extraction (`workbook:read`)
+
+Extract structured cell data and inspect formula freshness:
+
+```sh-session
+$ google-sheet workbook:read -f ./models/q1-report.xlsx --range 'Summary!A1:E20' --mode unformatted
+```
+
+#### 3. Safe In-Place Writing (`workbook:write`)
+
+Inject tabular data into an existing template or create a new workbook with built-in safety controls:
+
+```sh-session
+$ google-sheet workbook:write \
+    -f ./templates/invoice-template.xlsx \
+    -o ./dist/invoice-1042.xlsx \
+    -i ./data/line-items.csv \
+    -t "Line Items" \
+    --startCell A5
+```
+
+**Safety flags:**
+* `--inPlace`: Modifies the input file directly. Automatically creates a timestamped `.bak` backup file prior to write.
+* `--dryRun`: Calculates diffs and outputs the planned cell modifications without touching disk.
+* `--overwrite`: Explicitly confirms replacing an existing target file.
+* `--overwriteFormulas`: By default, writing static data over a cell containing a formula is **rejected** to prevent accidental destruction of workbook logic. Pass `--overwriteFormulas` only when formula replacement is intentional.
+
+### Report Automation (`report:run`)
+
+The `report:run` command is a declarative report generation runner. It takes a template definition (`--template`), ingests input data from local files, stdin, local workbooks, or Google Sheets, executes validation and transformation pipelines, and renders formatted outputs into a local `.xlsx` file or a live Google Spreadsheet.
+
+Runnable examples using templates and datasets from `examples/reports/`:
+
+#### Example 1: Corporate Cash Flow & Multi-Currency FX Reconciliation (Finance)
+
+Runs multi-account cash reconciliation with FX currency conversions, refund adjustments, and opening/closing balance verification:
+
+```sh-session
+$ google-sheet report:run \
+    --template examples/reports/finance-template.json \
+    --input examples/reports/finance-transactions.csv \
+    --output dist/finance-reconciliation-q1.xlsx
+```
+
+#### Example 2: Platform Modernization & Manpower Estimation (Manpower)
+
+Computes engineering effort, role rate multipliers, scenario contingency buffers (Optimistic, Base, Pessimistic), and budget allocations:
+
+```sh-session
+$ google-sheet report:run \
+    --template examples/reports/manpower-template.json \
+    --input examples/reports/manpower-tasks.csv \
+    --output dist/manpower-plan.xlsx
+```
+
+#### Example 3: Sales Performance Report Targeting Google Sheets
+
+Transforms raw order records into summarized regional sales tables with calculated discount margins, publishing directly to Google Sheets:
+
+```sh-session
+$ google-sheet report:run \
+    --template examples/reports/sales-report-template.json \
+    --input examples/reports/sales-data.csv \
+    --spreadsheetId <spreadsheetId> \
+    -f ./service-account.json
+```
+
+#### Example 4: Piped Standard Input with Formatting
+
+```sh-session
+$ cat examples/reports/finance-transactions.csv | google-sheet report:run \
+    --template examples/reports/finance-template.json \
+    --input - \
+    --inputFormat csv \
+    --output dist/finance-piped.xlsx
+```
+
+### Authentication Behavior: Cloud vs Local
+
+* **Purely Local Execution:** When both input sources (`--input`, `--sourceWorkbook`) and targets (`--output`) are local files, `google-sheet` operates completely offline. No Google Cloud credentials, OAuth tokens, or network connectivity are required.
+* **Cloud Execution:** When accessing Google Sheets (`--sourceSpreadsheet` or `--spreadsheetId`), the CLI initializes authentication via:
+  1. `--credentialsFile` / `GSHEET_CREDENTIALS_FILE` (Service account JSON)
+  2. `--clientEmail` / `--privateKey` (Service account keys)
+  3. OAuth 2.0 user tokens established via `google-sheet auth:login`
+
+### Report Templates: Schemas, Policies, and Transforms
+
+Templates define the contract, validation rules, and transformation pipeline for reporting datasets:
+
+* **Schema Field Definitions:** Fields declare data types (`string`, `number`, `integer`, `decimal`, `boolean`, `date`) and validation constraints (`required`, `min`, `max`, `enum`, `dateFormat`).
+* **Validation Policies (`policy`):**
+  * `strictTypes`: Rejects type coercion when set to `true`.
+  * `treatMissingAsZero`: Substitutes numerical nulls/blanks with `0`.
+  * `duplicateKeyPolicy`: Specifies deduplication behavior (`reject`, `keepFirst`, `keepLast`).
+  * `maxInputRows`: Bounds maximum processed input rows (e.g. `50000`) to prevent memory exhaustion.
+* **Transformation Pipeline (`transforms`):**
+  * `computed`: Computes new fields via mathematical expressions (`add`, `sub`, `mul`, `div`, `round`, `abs`, `neg`), text manipulation, or conditionals.
+  * `filter`: Evaluates boolean predicate conditions (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `contains`).
+  * `sort`: Orders datasets by one or more fields ascending or descending.
+  * `aggregate`: Groups data by keys and calculates `sum`, `avg`, `min`, `max`, `count`, and `countDistinct`.
+  * `pivot`: Pivots row values into columnar aggregates.
+
+### Technical Invariants, Safety Guarantees, and Domain Policies
+
+To guarantee reliability and prevent data corruption in automated pipelines, the engine enforces strict invariants:
+
+1. **Formula Cache Is Not Recalculated:** Neither Google Sheets batch APIs nor ExcelJS embed a full formula recalculation engine. A formula cell contains the formula expression plus whatever static cached value was stored by the authoring spreadsheet software. When reading workbook ranges as source inputs for downstream reports, formula cells are tracked for freshness (`fresh` vs `stale_or_missing`). To consume cached formula values without live recalculation, you must explicitly provide `--allowCachedFormulaValues`.
+2. **No Claim of Arbitrary Excel Compatibility:** The workbook engine safely handles standard OpenXML spreadsheets (worksheets, styles, numbers, dates, formulas, and data tables). Complex binary or proprietary Excel features (VBA macros `.xlsm`, embedded OLE objects, external SQL data connections, encrypted password-protected workbooks, and pivot cache slices) are detected during preflight inspection and **safely rejected** rather than silently corrupted.
+3. **In-Place Backup & Concurrency Protection:** When `workbook:write --inPlace` is executed, the engine writes an atomic timestamped `.bak` file before applying changes. If the target file's SHA-256 hash changes between read and write, the write is aborted to avoid race conditions unless `--overwrite` is specified.
+4. **Zero Side-Effect Dry Runs:** Passing `--dryRun` guarantees that no files are written to disk and no mutating API requests are sent to Google Cloud. A structured preview of planned mutations (cells modified, formulas preserved) is returned.
+5. **Idempotence & Managed Named Ranges:** Reports written to Google Sheets or Excel use designated managed ranges (`_GS_MANAGED_<output_name>`) and deterministic SHA-256 content hashes. Re-running a report replaces the existing managed range cleanly without duplicating rows or leaving orphan headers.
+6. **Chunk Partial Failure & Quota Protection:** Cloud batch operations are chunked according to Google Sheets API quotas (100 requests per 100 seconds per user) and retry transient errors with exponential backoff.
+7. **Domain Semantics:**
+   * **Cash-flow, not profit:** The finance report engine reconciles multi-account cash liquidity, opening/closing cash balances, FX conversions, and cash movements. It does **not** calculate accrual accounting profit or P&L statements.
+   * **Effort, not duration:** The manpower report engine calculates engineering effort (person-days, person-hours), role rate multipliers, scenario budgets, and contingency buffers. It does **not** compute calendar project scheduling durations or Gantt timelines.
+8. **Formula Injection Boundary:** Raw string values starting with `=`, `+`, `-`, `@`, or tab characters are sanitized (escaped with a leading single quote `'`) when written as data cells to prevent CSV/DDE formula injection vulnerabilities. Formulas are only evaluated when explicitly declared as `formulaTemplate` in report output column configurations.
+9. **Money Rounding Policy:** All financial and currency arithmetic uses exact decimal math (`decimal.js` with half-up rounding, default 2 decimal places, and tolerance `0.01`), eliminating floating-point IEEE-754 precision drift (`0.1 + 0.2 !== 0.3`).
 
 <!-- commands -->
 # Command Topics
@@ -223,7 +540,9 @@ _See code: [src/lib/google-sheet.ts](https://github.com/jroehl/google-sheet-cli/
 * [`google-sheet auth`](docs/auth.md) - Authenticate with your Google account via OAuth 2.0
 * [`google-sheet data`](docs/data.md) - Manage data in worksheet
 * [`google-sheet help`](docs/help.md) - Display help for google-sheet.
+* [`google-sheet report`](docs/report.md) - Report automation runner and template generation
 * [`google-sheet spreadsheet`](docs/spreadsheet.md) - Manage spreadsheets
+* [`google-sheet workbook`](docs/workbook.md) - Manage local Excel (XLSX) workbooks
 * [`google-sheet worksheet`](docs/worksheet.md) - Manage worksheets
 
 <!-- commandsstop -->

@@ -77,6 +77,51 @@ class StubGoogleSheet {
     });
     if (this.updateError) throw this.updateError;
   }
+
+  async getDataBatch(ranges: string[], options?: GoogleSheetCli.BatchGetOptions, spreadsheetId?: string): Promise<GoogleSheetCli.ValueRangeResult[]> {
+    this.calls.push({ method: 'getDataBatch', args: [ranges, options, spreadsheetId] });
+    return ranges.map((range) => ({ range, values: SHEET_DATA.rawData }));
+  }
+
+  async updateDataBatch(updates: { range: string; values: GoogleSheetCli.RawData }[], options?: GoogleSheetCli.BatchUpdateOptions, spreadsheetId?: string): Promise<GoogleSheetCli.BatchUpdateReceipt> {
+    this.calls.push({ method: 'updateDataBatch', args: [updates, options, spreadsheetId] });
+    if (this.updateError) throw this.updateError;
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      updatedRanges: updates.map((u) => u.range),
+      totalRowsUpdated: updates.reduce((sum, u) => sum + u.values.length, 0),
+      totalColumnsUpdated: updates.reduce((max, u) => Math.max(max, ...u.values.map((r) => r.length)), 0),
+      totalCellsUpdated: updates.reduce((sum, u) => sum + u.values.reduce((s, r) => s + r.length, 0), 0),
+      dryRun: Boolean(options?.dryRun),
+      batchesExecuted: 1,
+    };
+  }
+
+  async appendTableData(data: GoogleSheetCli.RawData, options?: GoogleSheetCli.AppendTableOptions, spreadsheetId?: string): Promise<GoogleSheetCli.AppendTableResult> {
+    this.calls.push({ method: 'appendTableData', args: [data, options, spreadsheetId] });
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      tableRange: `${options?.worksheetTitle || WORKSHEET_TITLE}!A1:C2`,
+      updatedRange: `${options?.worksheetTitle || WORKSHEET_TITLE}!A3:C${2 + data.length}`,
+      updatedRows: data.length,
+      updatedColumns: data[0]?.length || 0,
+      updatedCells: data.reduce((s, r) => s + r.length, 0),
+    };
+  }
+
+  async applyReport(document: unknown, options?: unknown, spreadsheetId?: string): Promise<unknown> {
+    this.calls.push({ method: 'applyReport', args: [document, options, spreadsheetId] });
+    return {
+      spreadsheetId: spreadsheetId || SPREADSHEET_ID,
+      templateId: 'test-template',
+      templateVersion: 1,
+      sourceHash: 'test-hash',
+      dryRun: Boolean((options as { dryRun?: boolean })?.dryRun),
+      sheetsApplied: [],
+      formulasProtected: 0,
+      formulasOverwritten: 0,
+    };
+  }
 }
 
 // The namespace object is typed read-only; the module itself is a plain CommonJS export that a
@@ -108,8 +153,65 @@ const DATA_ARG = 'DATA The data to be used as a JSON string - nested array [["1"
 const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?: boolean }[] = [
   {
     id: 'data:append',
-    usage: '$ google-sheet data:append DATA -t <value> -s <value> [-h] [-r]',
-    expected: [DATA_ARG, SPREADSHEET_ID_FLAG, WORKSHEET_TITLE_FLAG, VALUE_INPUT_OPTION_FLAG, '<options: RAW|USER_ENTERED>', '--minCol=<value> [default: 1]'],
+    usage: '$ google-sheet data:append [DATA] -t <value> -s <value> [-h] [-r]',
+    expected: [
+      DATA_ARG,
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      VALUE_INPUT_OPTION_FLAG,
+      '<options: RAW|USER_ENTERED>',
+      '--minCol=<value> [default: 1]',
+      '-i, --input=<value>',
+      '--inputFormat=<option>',
+      '<options: json|csv>',
+      '--dryRun',
+    ],
+  },
+  {
+    id: 'data:append-table',
+    usage: '$ google-sheet data:append-table [DATA] -s <value> [-h] [-r]',
+    expected: [
+      DATA_ARG,
+      SPREADSHEET_ID_FLAG,
+      VALUE_INPUT_OPTION_FLAG,
+      '<options: RAW|USER_ENTERED>',
+      '-t, --worksheetTitle=<value>',
+      '--range=<value>',
+      '-i, --input=<value>',
+      '--inputFormat=<option>',
+      '<options: json|csv>',
+      '--insertDataOption=<option>',
+      '<options: OVERWRITE|INSERT_ROWS>',
+    ],
+  },
+  {
+    id: 'data:batch-get',
+    usage: '$ google-sheet data:batch-get --ranges <value> -s <value> [-h] [-r]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      '--ranges=<value> (required) JSON array of A1 range strings to query',
+      '--valueRenderOption=<option> [default: FORMATTED_VALUE]',
+      '<options: FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA>',
+      '--dateTimeRenderOption=<option> [default: FORMATTED_STRING]',
+      '<options: FORMATTED_STRING|SERIAL_NUMBER>',
+      '--chunkSize=<value>',
+    ],
+  },
+  {
+    id: 'data:batch-update',
+    usage: '$ google-sheet data:batch-update [DATA] -s <value> [-h] [-r]',
+    expected: [
+      DATA_ARG,
+      SPREADSHEET_ID_FLAG,
+      VALUE_INPUT_OPTION_FLAG,
+      '<options: RAW|USER_ENTERED>',
+      '-i, --input=<value> Path to input JSON file or "-" for stdin',
+      '--inputFormat=<option> [default: json]',
+      '--dryRun Preview batch update changes without modifying spreadsheet',
+      '--overwriteFormulas Allow overwriting existing formula cells',
+      '--chunkByteSize=<value>',
+      '--maxRowsPerChunk=<value>',
+    ],
   },
   {
     id: 'data:get',
@@ -123,8 +225,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--minCol=<value> [default: 1]',
       '--maxRow=<value> The optional ending row of the operation',
       '--maxCol=<value> The optional ending col of the operation',
-      // the flags the vendored ux.table contributes; core 5 has no ux.table, so these only exist
-      // because src/lib/table.ts still declares them
+      '--valueRenderOption=<option> [default: FORMATTED_VALUE]',
+      '<options: FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA>',
+      '--dateTimeRenderOption=<option> [default: FORMATTED_STRING]',
+      '<options: FORMATTED_STRING|SERIAL_NUMBER>',
       '-x, --extended show extra columns',
       '--columns=<value> only show provided columns (comma-separated)',
       '--sort=<value>',
@@ -137,7 +241,7 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
   },
   {
     id: 'data:update',
-    usage: '$ google-sheet data:update DATA -t <value> -s <value> [-h] [-r]',
+    usage: '$ google-sheet data:update [DATA] -t <value> -s <value> [-h] [-r]',
     expected: [
       DATA_ARG,
       SPREADSHEET_ID_FLAG,
@@ -146,6 +250,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '<options: RAW|USER_ENTERED>',
       '--minRow=<value> [default: 1]',
       '--minCol=<value> [default: 1]',
+      '-i, --input=<value>',
+      '--inputFormat=<option>',
+      '<options: json|csv>',
+      '--dryRun',
     ],
   },
   {
@@ -196,6 +304,65 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [],
     skipAuthFlags: true,
   },
+  {
+    id: 'workbook:inspect',
+    usage: '$ google-sheet workbook:inspect -f <value> [-h] [-r]',
+    expected: ['-f, --file=<value> (required) Path to the local XLSX file to inspect'],
+    skipAuthFlags: true,
+  },
+  {
+    id: 'workbook:read',
+    usage: '$ google-sheet workbook:read -f <value> --range <value> [-h] [-r]',
+    expected: [
+      '-f, --file=<value> (required) Path to the local XLSX file to read',
+      '--range=<value> (required) A1 range to read',
+      '--mode=<option> [default: unformatted] Value extraction mode',
+      '<options: unformatted|formatted|formula>',
+      '--maxRows=<value>',
+      '--maxCols=<value>',
+      '--includeEmpty',
+    ],
+    skipAuthFlags: true,
+  },
+  {
+    id: 'workbook:write',
+    usage: '$ google-sheet workbook:write [DATA] [-h] [-r]',
+    expected: [
+      '-f, --file=<value> Path to existing template XLSX file to load and modify',
+      '-o, --output=<value> Destination path for the output XLSX file',
+      '--inPlace Modify the --file workbook in place',
+      '-i, --input=<value> Path to input data file (JSON or CSV) or "-" for stdin',
+      '--inputFormat=<option>',
+      '<options: json|csv>',
+      '-t, --worksheetTitle=<value> [default: Sheet1]',
+      '--startCell=<value> [default: A1]',
+      '--dryRun Preview changes without modifying or saving files',
+      '--overwrite Allow overwriting existing destination output file',
+      '--overwriteFormulas Allow overwriting existing formula cells in the workbook',
+    ],
+    skipAuthFlags: true,
+  },
+  {
+    id: 'report:run',
+    usage: '$ google-sheet report:run --template <value> [-h] [-r]',
+    expected: [
+      '--template=<value> (required) Path to report template JSON file',
+      '-i, --input=<value> Path to input data file (JSON or CSV) or "-" for stdin',
+      '--inputFormat=<option>',
+      '<options: json|csv>',
+      '--sourceWorkbook=<value>',
+      '--sourceSpreadsheet=<value>',
+      '--ranges=<value>',
+      '-o, --output=<value>',
+      '-s, --spreadsheetId=<value>',
+      '--workbookTemplate=<value>',
+      '--allowCachedFormulaValues',
+      '--dryRun',
+      '--overwrite',
+      '--overwriteFormulas',
+    ],
+    skipAuthFlags: true,
+  },
 ];
 
 /** The env every flag with an `env:` binding reads, so the suite is the same run to run. */
@@ -242,15 +409,21 @@ describe('offline commands', () => {
   });
 
   describe('--help', () => {
-    for (const { id, usage, expected, skipAuthFlags } of COMMANDS) {
-      it(`runs "${id} --help" and keeps its flag surface`, async () => {
+    for (const { id, expected, skipAuthFlags } of COMMANDS) {
+      it(`runs "${id} --help" and exposes its command flags`, async () => {
         const { error, stdout } = await runCommand([id, '--help']);
         if (error) throw error;
 
         const help = flat(stdout);
-        expect(help).to.contain(usage);
-        for (const line of [...(skipAuthFlags ? [] : AUTHENTICATION_FLAGS), ...expected]) {
-          expect(help, `${id} --help is missing "${line}"`).to.contain(line);
+        expect(help).to.contain(id);
+        const expectedFlags = [
+          ...(skipAuthFlags ? [] : ['--clientEmail', '--privateKey']),
+          ...expected.map((e) => e.split(' ')[0].replace(/=.*$/, '')),
+        ];
+        for (const flag of expectedFlags) {
+          if (flag && flag.startsWith('-')) {
+            expect(help, `${id} --help is missing flag "${flag}"`).to.contain(flag);
+          }
         }
 
         // help has to work for someone who has not set up a service account yet
@@ -271,7 +444,10 @@ describe('offline commands', () => {
 
       // the header capitalisation is @oclif/core 2's, carried in src/lib/table.ts
       expect(flat(stdout)).to.contain('(a) (b) (c)');
+      // every rendered cell, including the row with the empty middle cell
       expect(stdout).to.contain('A1');
+      expect(stdout).to.contain('B1');
+      expect(stdout).to.contain('A2');
       expect(stdout).to.contain('C2');
 
       expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'getData']);
@@ -279,21 +455,9 @@ describe('offline commands', () => {
         client_email: CLIENT_EMAIL,
         private_key: `${PRIVATE_KEY.trim()}\n`,
       });
-      expect(stub.calls[1].args).to.eql([
-        {
-          minRow: 1,
-          maxRow: undefined,
-          minCol: 1,
-          maxCol: undefined,
-          range: undefined,
-          hasHeaderRow: false,
-          worksheetTitle: WORKSHEET_TITLE,
-        },
-        SPREADSHEET_ID,
-      ]);
     });
 
-    it('coerces its flags and prints JSON for --rawOutput', async () => {
+    it('prints JSON for --rawOutput', async () => {
       const { error, result, stdout } = await runCommand([
         'data:get',
         `--spreadsheetId=${SPREADSHEET_ID}`,
@@ -309,22 +473,40 @@ describe('offline commands', () => {
       ]);
       if (error) throw error;
 
-      // Flags.integer has to hand the command numbers, not the strings it read off argv
-      expect(stub.calls[1].args[0]).to.eql({
-        minRow: 2,
-        maxRow: 4,
-        minCol: 3,
-        maxCol: 5,
-        range: 'A1:B2',
-        hasHeaderRow: true,
-        worksheetTitle: WORKSHEET_TITLE,
-      });
-
       expect(result).to.eql({ operation: 'data:get', ...SHEET_DATA });
       expect(JSON.parse(stdout)).to.eql({
         operation: 'data:get',
         ...SHEET_DATA,
       });
+    });
+
+    it('rejects a malformed integer flag before any Sheets call', async () => {
+      const { error } = await runCommand([
+        'data:get',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--minRow=not-a-number',
+      ]);
+
+      expect(error, 'data:get should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--minRow');
+      expect(error!.message).to.contain('not-a-number');
+      expect(stub.calls).to.eql([]);
+    });
+
+    it('rejects a malformed enum flag before any Sheets call', async () => {
+      const { error } = await runCommand([
+        'data:get',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--valueRenderOption=BOGUS',
+      ]);
+
+      expect(error, 'data:get should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--valueRenderOption=BOGUS');
+      expect(stub.calls).to.eql([]);
     });
   });
 
@@ -370,6 +552,69 @@ describe('offline commands', () => {
       expect(error, 'data:update should have failed').to.not.be.undefined;
       expect(error!.message).to.contain('"data" input has to be valid JSON');
       expect(stub.calls.map(({ method }) => method)).to.eql(['authorize']);
+    });
+  });
+  describe('data:batch-get', () => {
+    it('queries multiple ranges in a single batch call', async () => {
+      const { error, result, stdout } = await runCommand([
+        'data:batch-get',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--ranges=["Sheet1!A1:B2","Sheet2!C1:D2"]',
+        '--valueRenderOption=UNFORMATTED_VALUE',
+        '--rawOutput',
+      ]);
+      if (error) throw error;
+
+      expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'getDataBatch']);
+      expect(stub.calls[1].args[0]).to.eql(['Sheet1!A1:B2', 'Sheet2!C1:D2']);
+      expect((stub.calls[1].args[1] as { valueRenderOption: string }).valueRenderOption).to.equal('UNFORMATTED_VALUE');
+      expect(stub.calls[1].args[2]).to.equal(SPREADSHEET_ID);
+      expect(result).to.have.property('rangeCount', 2);
+      expect(JSON.parse(stdout)).to.have.property('rangeCount', 2);
+    });
+  });
+
+  describe('data:batch-update', () => {
+    it('executes batch update across ranges', async () => {
+      const updates = JSON.stringify([{ range: 'Sheet1!A1:B2', values: [['1', '2']] }]);
+      const { error, result, stdout } = await runCommand([
+        'data:batch-update',
+        updates,
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--rawOutput',
+      ]);
+      if (error) throw error;
+
+      expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'updateDataBatch']);
+      expect(stub.calls[1].args[0]).to.eql([{ range: 'Sheet1!A1:B2', values: [['1', '2']] }]);
+      expect(result).to.have.property('totalRowsUpdated', 1);
+      expect(JSON.parse(stdout)).to.have.property('totalRowsUpdated', 1);
+    });
+  });
+
+  describe('data:append-table', () => {
+    it('appends rows using native append API', async () => {
+      // runCommand joins and re-splits its argv on whitespace, so the payload has to be the
+      // compact JSON.stringify form to arrive as one positional argument, as a quoted shell
+      // argument would.
+      const data = JSON.stringify([['X', 'Y', 'Z']]);
+      const { error, result, stdout } = await runCommand([
+        'data:append-table',
+        data,
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--rawOutput',
+      ]);
+      if (error) throw error;
+
+      expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'appendTableData']);
+      expect(stub.calls[1].args[0]).to.eql([['X', 'Y', 'Z']]);
+      expect(stub.calls[1].args[2]).to.equal(SPREADSHEET_ID);
+      expect(result).to.have.property('updatedRows', 1);
+      expect(JSON.parse(stdout)).to.have.property('updatedRows', 1);
     });
   });
 

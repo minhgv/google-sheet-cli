@@ -1,0 +1,67 @@
+{
+  "id": "sales-performance-v1",
+  "version": 1,
+  "kind": "table",
+  "title": "Global Sales Performance by Region",
+  "description": "Transforms raw order data into clean summary with volume, gross amount, discounts, and net sales.",
+  "schema": {
+    "fields": [
+      { "name": "order_id", "type": "string", "required": true },
+      { "name": "date", "type": "date", "required": true, "dateFormat": "YYYY-MM-DD" },
+      { "name": "region", "type": "string", "required": true, "enum": ["North America", "Europe", "APAC", "Latin America"] },
+      { "name": "customer", "type": "string", "required": true },
+      { "name": "units", "type": "integer", "required": true, "min": 1 },
+      { "name": "unit_price", "type": "decimal", "required": true, "min": 0 },
+      { "name": "discount_rate", "type": "decimal", "required": true, "min": 0, "max": 1 }
+    ]
+  },
+  "transforms": [
+    {
+      "kind": "computed",
+      "targetField": "gross_total",
+      "expression": {
+        "op": "mul",
+        "args": ["units", "unit_price"]
+      }
+    },
+    {
+      "kind": "computed",
+      "targetField": "discount_amount",
+      "expression": {
+        "op": "round",
+        "args": [{ "op": "mul", "args": ["gross_total", "discount_rate"] }, 2]
+      }
+    },
+    {
+      "kind": "computed",
+      "targetField": "net_total",
+      "expression": {
+        "op": "sub",
+        "args": ["gross_total", "discount_amount"]
+      }
+    },
+    {
+      "kind": "sort",
+      "fields": [
+        { "field": "net_total", "order": "desc" }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Order Summary",
+      "columns": [
+        { "header": "Order ID", "field": "order_id", "width": 14 },
+        { "header": "Order Date", "field": "date", "width": 14 },
+        { "header": "Region", "field": "region", "width": 18 },
+        { "header": "Customer", "field": "customer", "width": 26 },
+        { "header": "Units Sold", "field": "units", "width": 14, "format": "#,##0" },
+        { "header": "Unit Price ($)", "field": "unit_price", "width": 16, "format": "$#,##0.00" },
+        { "header": "Gross Total ($)", "formulaTemplate": "E{row}*F{row}", "resultField": "gross_total", "width": 18, "format": "$#,##0.00" },
+        { "header": "Discount Rate", "field": "discount_rate", "width": 16, "format": "0.0%" },
+        { "header": "Net Total ($)", "formulaTemplate": "G{row}*(1-H{row})", "resultField": "net_total", "width": 18, "format": "$#,##0.00" }
+      ],
+      "freezeRows": 1
+    }
+  ]
+}

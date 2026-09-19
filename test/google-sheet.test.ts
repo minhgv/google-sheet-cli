@@ -2,7 +2,7 @@ import { expect } from 'chai';
 import { auth, sheets as sheetsApi, sheets_v4 } from '@googleapis/sheets';
 import { normalizeCredentials } from '../src/lib/credentials';
 import GoogleSheet from '../src/lib/google-sheet';
-import { expectRange, getID } from './commands/helper';
+import { describeLive, expectRange, getID } from './commands/helper';
 
 const data = {
   new: [
@@ -15,7 +15,7 @@ const data = {
   ],
 };
 
-describe('google-sheet', () => {
+describeLive('google-sheet', () => {
   let gsheet: GoogleSheet;
   const worksheetTitle = getID('lib_');
   const { TEST_SPREADSHEET_ID = '', GSHEET_CLIENT_EMAIL = '', GSHEET_PRIVATE_KEY = '' } = process.env;
@@ -104,7 +104,7 @@ describe('google-sheet', () => {
  * fake is not wrong in the same direction as the code. If one of these disagrees with its twin,
  * believe this one and fix the fake.
  */
-describe('google-sheet grid growth (#611)', () => {
+describeLive('google-sheet grid growth (#611)', () => {
   let gsheet: GoogleSheet;
   let sheets: sheets_v4.Sheets;
   const constrained = getID('grid_');

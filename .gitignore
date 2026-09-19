@@ -10,3 +10,6 @@ node_modules
 .env*
 coverage
 tsconfig.tsbuildinfo
+.DS_Store
+/.sot
+client_secret_*.json

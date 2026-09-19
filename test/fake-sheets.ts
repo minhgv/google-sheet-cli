@@ -32,6 +32,8 @@ export interface FakeWorksheet {
   index: number;
   rowCount: number;
   columnCount: number;
+  frozenRowCount?: number;
+  frozenColumnCount?: number;
   /** cell values keyed by `${row}:${col}`, both 1 based */
   cells: Map<string, string>;
 }
@@ -40,6 +42,7 @@ export interface FakeSpreadsheet {
   spreadsheetId: string;
   title: string;
   sheets: FakeWorksheet[];
+  developerMetadata?: Record<string, unknown>[];
 }
 
 export interface RecordedRequest {
@@ -126,14 +129,13 @@ export const parseFakeRange = (range: string): FakeRange => {
   let title: string | undefined;
   let rest = range;
 
-  const quote = range[0];
-  if (quote === "'" || quote === '"') {
+  if (range.startsWith("'")) {
     let i = 1;
     let unquoted = '';
     for (; i < range.length; i++) {
-      if (range[i] === quote) {
-        if (range[i + 1] === quote) {
-          unquoted += quote;
+      if (range[i] === "'") {
+        if (range[i + 1] === "'") {
+          unquoted += "'";
           i++;
           continue;
         }
@@ -141,11 +143,13 @@ export const parseFakeRange = (range: string): FakeRange => {
       }
       unquoted += range[i];
     }
-    if (range[i] !== quote) throw new Error(`Unable to parse range: ${range}`);
+    if (range[i] !== "'") throw new Error(`Unable to parse range: ${range}`);
     title = unquoted;
     rest = range.slice(i + 1);
     if (rest.startsWith('!')) rest = rest.slice(1);
     else if (rest.length) throw new Error(`Unable to parse range: ${range}`);
+  } else if (range.startsWith('"')) {
+    throw new Error(`Unable to parse range: ${range}`);
   } else {
     const bang = range.lastIndexOf('!');
     if (bang >= 0) {
@@ -471,9 +475,14 @@ export class FakeSheets {
     const path = decodeURIComponent(parsed.pathname);
 
     if (method === 'POST' && path === '/v4/spreadsheets') return this.createSpreadsheet(body);
-
     const batch = path.match(/^\/v4\/spreadsheets\/([^/]+):batchUpdate$/);
     if (method === 'POST' && batch) return this.batchUpdate(batch[1], body);
+
+    const valuesBatchGet = path.match(/^\/v4\/spreadsheets\/([^/]+)\/values:batchGet$/);
+    if (method === 'GET' && valuesBatchGet) return this.valuesBatchGet(valuesBatchGet[1], parsed);
+
+    const valuesBatchUpdate = path.match(/^\/v4\/spreadsheets\/([^/]+)\/values:batchUpdate$/);
+    if (method === 'POST' && valuesBatchUpdate) return this.valuesBatchUpdate(valuesBatchUpdate[1], body);
 
     const values = path.match(/^\/v4\/spreadsheets\/([^/]+)\/values\/(.+?)(:append)?$/);
     if (values) {
@@ -482,7 +491,6 @@ export class FakeSheets {
       if (method === 'PUT') return this.valuesUpdate(spreadsheetId, range, body);
       if (method === 'POST' && append) return this.valuesAppend(spreadsheetId, range, body, parsed);
     }
-
     const spreadsheet = path.match(/^\/v4\/spreadsheets\/([^/]+)$/);
     if (method === 'GET' && spreadsheet) return this.spreadsheetGet(spreadsheet[1]);
 
@@ -515,65 +523,375 @@ export class FakeSheets {
     const spreadsheet = this.spreadsheets.get(spreadsheetId);
     if (!spreadsheet) return this.notFound();
 
-    const replies: any[] = [];
-    for (const request of body?.requests ?? []) {
+    // Google applies a batch atomically and in order: a later subrequest may reference a
+    // sheet an earlier one created, and any invalid request rejects the whole batch without
+    // leaving partial state behind. The fake therefore applies each request to a throwaway
+    // copy and commits the copy only after every request has validated.
+    const working: FakeSpreadsheet = {
+      spreadsheetId: spreadsheet.spreadsheetId,
+      title: spreadsheet.title,
+      sheets: spreadsheet.sheets.map((sheet) => ({ ...sheet, cells: new Map(sheet.cells) })),
+      developerMetadata: spreadsheet.developerMetadata?.map((meta) => ({ ...meta })),
+    };
+    const sheetIdInUse = (id: number): boolean => working.sheets.some((s) => s.sheetId === id);
+
+    const replies: Record<string, unknown>[] = [];
+    const requests = body?.requests ?? [];
+    for (let index = 0; index < requests.length; index++) {
+      const request = requests[index];
       if (request.addSheet) {
-        const title = request.addSheet.properties?.title;
-        if (spreadsheet.sheets.some((s) => s.title === title)) {
-          return this.badRequest(`Invalid requests[0].addSheet: A sheet with the name "${title}" already exists. Please enter another name.`);
+        const properties = request.addSheet.properties ?? {};
+        const title = properties.title;
+        if (working.sheets.some((s) => s.title === title)) {
+          return this.badRequest(`Invalid requests[${index}].addSheet: A sheet with the name "${title}" already exists. Please enter another name.`);
         }
+        // The caller may pin the id (0 is a valid Google sheet id); only invent one when it
+        // is absent, and never hand out an id the spreadsheet already uses.
+        let sheetId: number;
+        if (properties.sheetId !== undefined && properties.sheetId !== null) {
+          if (!Number.isInteger(properties.sheetId) || properties.sheetId < 0) {
+            return this.badRequest(`Invalid requests[${index}].addSheet: The provided sheetId ${properties.sheetId} is invalid.`);
+          }
+          if (sheetIdInUse(properties.sheetId)) {
+            return this.badRequest(`Invalid requests[${index}].addSheet: A sheet with the id ${properties.sheetId} already exists.`);
+          }
+          sheetId = properties.sheetId;
+        } else {
+          sheetId = this.nextSheetId++;
+          while (sheetIdInUse(sheetId)) sheetId = this.nextSheetId++;
+        }
+        const grid = properties.gridProperties ?? {};
         const sheet: FakeWorksheet = {
-          sheetId: this.nextSheetId++,
+          sheetId,
           title,
-          index: spreadsheet.sheets.length,
-          rowCount: request.addSheet.properties?.gridProperties?.rowCount ?? 1000,
-          columnCount: request.addSheet.properties?.gridProperties?.columnCount ?? 26,
+          index: working.sheets.length,
+          rowCount: grid.rowCount ?? 1000,
+          columnCount: grid.columnCount ?? 26,
           cells: new Map(),
         };
-        spreadsheet.sheets.push(sheet);
+        if (grid.frozenRowCount !== undefined) sheet.frozenRowCount = grid.frozenRowCount;
+        if (grid.frozenColumnCount !== undefined) sheet.frozenColumnCount = grid.frozenColumnCount;
+        working.sheets.push(sheet);
         replies.push({ addSheet: { properties: this.renderSheetProperties(sheet) } });
         continue;
       }
 
       if (request.deleteSheet) {
-        const index = spreadsheet.sheets.findIndex((s) => s.sheetId === request.deleteSheet.sheetId);
-        if (index < 0) return this.badRequest(`Invalid requests[0].deleteSheet: No sheet with id: ${request.deleteSheet.sheetId}`);
-        spreadsheet.sheets.splice(index, 1);
-        spreadsheet.sheets.forEach((s, i) => (s.index = i));
+        const sheetIndex = working.sheets.findIndex((s) => s.sheetId === request.deleteSheet.sheetId);
+        if (sheetIndex < 0) return this.badRequest(`Invalid requests[${index}].deleteSheet: No sheet with id: ${request.deleteSheet.sheetId}`);
+        working.sheets.splice(sheetIndex, 1);
+        working.sheets.forEach((s, i) => (s.index = i));
         replies.push({});
         continue;
       }
 
       if (request.updateSheetProperties) {
         const properties = request.updateSheetProperties.properties ?? {};
-        const sheet = spreadsheet.sheets.find((s) => s.sheetId === properties.sheetId);
-        if (!sheet) return this.badRequest(`Invalid requests[0].updateSheetProperties: No sheet with id: ${properties.sheetId}`);
+        const sheet = working.sheets.find((s) => s.sheetId === properties.sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].updateSheetProperties: No sheet with id: ${properties.sheetId}`);
         const fields: string[] = String(request.updateSheetProperties.fields ?? '').split(',');
         if (fields.includes('title') || fields.includes('*')) sheet.title = properties.title;
         if (properties.gridProperties?.rowCount) sheet.rowCount = properties.gridProperties.rowCount;
         if (properties.gridProperties?.columnCount) sheet.columnCount = properties.gridProperties.columnCount;
+        if (properties.gridProperties?.frozenRowCount !== undefined) sheet.frozenRowCount = properties.gridProperties.frozenRowCount;
+        if (properties.gridProperties?.frozenColumnCount !== undefined) sheet.frozenColumnCount = properties.gridProperties.frozenColumnCount;
         replies.push({});
         continue;
       }
 
       if (request.appendDimension) {
         const { sheetId, dimension, length } = request.appendDimension;
-        const sheet = spreadsheet.sheets.find((s) => s.sheetId === sheetId);
-        if (!sheet) return this.badRequest(`Invalid requests[0].appendDimension: No sheet with id: ${sheetId}`);
-        if (!length || length < 1) return this.badRequest('Invalid requests[0].appendDimension: length must be positive.');
+        const sheet = working.sheets.find((s) => s.sheetId === sheetId);
+        if (!sheet) return this.badRequest(`Invalid requests[${index}].appendDimension: No sheet with id: ${sheetId}`);
+        if (!length || length < 1) return this.badRequest(`Invalid requests[${index}].appendDimension: length must be positive.`);
         if (dimension === 'ROWS') sheet.rowCount += length;
         else if (dimension === 'COLUMNS') sheet.columnCount += length;
-        else return this.badRequest(`Invalid requests[0].appendDimension: unknown dimension ${dimension}`);
+        else return this.badRequest(`Invalid requests[${index}].appendDimension: unknown dimension ${dimension}`);
         replies.push({});
         continue;
       }
 
-      return this.badRequest(`Invalid requests[0]: unsupported request ${Object.keys(request).join(',')}`);
+      if (request.updateCells) {
+        const { rows, start, range, fields } = request.updateCells;
+        if (start && rows) {
+          const sheet = working.sheets.find((s) => s.sheetId === start.sheetId);
+          if (!sheet) return this.badRequest(`Invalid requests[${index}].updateCells: No sheet with id: ${start.sheetId}`);
+          const startRowIdx = start.rowIndex ?? 0;
+          const startColIdx = start.columnIndex ?? 0;
+          rows.forEach((row: { values?: Array<{ userEnteredValue?: { stringValue?: string; numberValue?: number; boolValue?: boolean; formulaValue?: string } }> }, r: number) => {
+            const cellValues = row?.values ?? [];
+            cellValues.forEach((cellData, c: number) => {
+              const rPos = startRowIdx + r + 1;
+              const cPos = startColIdx + c + 1;
+              const key = `${rPos}:${cPos}`;
+              const uev = cellData?.userEnteredValue;
+              if (!uev) {
+                if (fields === 'userEnteredValue' || fields === '*') {
+                  sheet.cells.delete(key);
+                }
+                return;
+              }
+              if (uev.formulaValue !== undefined) {
+                const f = String(uev.formulaValue);
+                sheet.cells.set(key, f.startsWith('=') ? f : `=${f}`);
+              } else if (uev.numberValue !== undefined) {
+                sheet.cells.set(key, String(uev.numberValue));
+              } else if (uev.stringValue !== undefined) {
+                sheet.cells.set(key, String(uev.stringValue));
+              } else if (uev.boolValue !== undefined) {
+                sheet.cells.set(key, String(uev.boolValue));
+              }
+            });
+          });
+          replies.push({});
+          continue;
+        }
+
+        if (range && !rows) {
+          const sheet = working.sheets.find((s) => s.sheetId === range.sheetId);
+          if (!sheet) return this.badRequest(`Invalid requests[${index}].updateCells: No sheet with id: ${range.sheetId}`);
+          const startRow = (range.startRowIndex ?? 0) + 1;
+          const endRow = range.endRowIndex !== undefined ? range.endRowIndex : sheet.rowCount;
+          const startCol = (range.startColumnIndex ?? 0) + 1;
+          const endCol = range.endColumnIndex !== undefined ? range.endColumnIndex : sheet.columnCount;
+          for (let r = startRow; r <= endRow; r++) {
+            for (let c = startCol; c <= endCol; c++) {
+              sheet.cells.delete(`${r}:${c}`);
+            }
+          }
+          replies.push({});
+          continue;
+        }
+
+        replies.push({});
+        continue;
+      }
+
+      if (request.updateDimensionProperties) {
+        replies.push({});
+        continue;
+      }
+
+      if (request.repeatCell) {
+        replies.push({});
+        continue;
+      }
+
+      if (request.createDeveloperMetadata) {
+        const meta = request.createDeveloperMetadata.developerMetadata || {};
+        const metadataId = this.nextSheetId++;
+        const fullMeta = { developerMetadataId: metadataId, ...meta };
+        if (!working.developerMetadata) working.developerMetadata = [];
+        working.developerMetadata.push(fullMeta);
+        replies.push({
+          createDeveloperMetadata: {
+            developerMetadata: fullMeta,
+          },
+        });
+        continue;
+      }
+
+      if (request.updateDeveloperMetadata) {
+        const meta = request.updateDeveloperMetadata.developerMetadata || {};
+        if (!working.developerMetadata) working.developerMetadata = [];
+        const existing = working.developerMetadata.find((m: Record<string, unknown>) => {
+          const mLocation = m.location as { sheetId?: number } | undefined;
+          const metaLocation = meta.location as { sheetId?: number } | undefined;
+          return (meta.metadataId && m.developerMetadataId === meta.metadataId) ||
+            (meta.metadataKey && m.metadataKey === meta.metadataKey &&
+              (!metaLocation?.sheetId || mLocation?.sheetId === metaLocation.sheetId));
+        });
+        if (existing) {
+          Object.assign(existing, meta);
+          replies.push({
+            updateDeveloperMetadata: {
+              developerMetadata: [existing],
+            },
+          });
+        } else {
+          const metadataId = this.nextSheetId++;
+          const fullMeta = { developerMetadataId: metadataId, ...meta };
+          working.developerMetadata.push(fullMeta);
+          replies.push({
+            updateDeveloperMetadata: {
+              developerMetadata: [fullMeta],
+            },
+          });
+        }
+        continue;
+      }
+
+      if (request.addNamedRange) {
+        replies.push({
+          addNamedRange: {
+            namedRange: {
+              namedRangeId: `nr-${this.nextSheetId++}`,
+              ...request.addNamedRange.namedRange,
+            },
+          },
+        });
+        continue;
+      }
+
+      if (request.updateNamedRange) {
+        replies.push({
+          updateNamedRange: {
+            namedRange: request.updateNamedRange.namedRange,
+          },
+        });
+        continue;
+      }
+
+      return this.badRequest(`Invalid requests[${index}]: unsupported request ${Object.keys(request).join(',')}`);
     }
 
+    // Every request validated: publish the copy in one swap so readers never see
+    // a half-applied batch, and failures above leave the live spreadsheet untouched.
+    spreadsheet.sheets = working.sheets;
+    spreadsheet.developerMetadata = working.developerMetadata;
     return { status: 200, body: { spreadsheetId, replies } };
   }
 
+  /**
+   * `spreadsheets.values.batchGet`
+   */
+  private valuesBatchGet(spreadsheetId: string, parsed: URL): FakeResponse {
+    const spreadsheet = this.spreadsheets.get(spreadsheetId);
+    if (!spreadsheet) return this.notFound();
+
+    let ranges = parsed.searchParams.getAll('ranges');
+    if (ranges.length === 0) {
+      const single = parsed.searchParams.get('ranges');
+      if (single) ranges = [single];
+    }
+
+    const valueRenderOption = parsed.searchParams.get('valueRenderOption') || 'FORMATTED_VALUE';
+
+    const valueRanges = ranges.map((rangeStr) => {
+      let target: ResolvedRange;
+      try {
+        target = this.resolve(spreadsheet, rangeStr);
+      } catch {
+        return {
+          range: rangeStr,
+          majorDimension: 'ROWS',
+          values: [],
+        };
+      }
+
+      const { sheet } = target;
+      const startRow = Math.min(target.startRow, sheet.rowCount);
+      const startCol = Math.min(target.startCol, sheet.columnCount);
+      const endRow = Math.min(target.endRow, sheet.rowCount);
+      const endCol = Math.min(target.endCol, sheet.columnCount);
+
+      const rows: (string | number | boolean)[][] = [];
+      for (let r = startRow; r <= endRow; r++) {
+        const row: (string | number | boolean)[] = [];
+        for (let c = startCol; c <= endCol; c++) {
+          const val = sheet.cells.get(`${r}:${c}`) ?? '';
+          if (valueRenderOption === 'FORMULA') {
+            row.push(val);
+          } else if (valueRenderOption === 'UNFORMATTED_VALUE') {
+            if (val === 'TRUE' || val === 'true') row.push(true);
+            else if (val === 'FALSE' || val === 'false') row.push(false);
+            else if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(val)) {
+              row.push(Number(val));
+            } else {
+              row.push(val);
+            }
+          } else {
+          }
+        }
+        while (row.length && row[row.length - 1] === '') row.pop();
+        rows.push(row);
+      }
+      while (rows.length && rows[rows.length - 1].length === 0) rows.pop();
+
+      return {
+        range: formatRange(sheet.title, target.startRow, target.startCol, target.endRow, target.endCol),
+        majorDimension: 'ROWS',
+        values: rows,
+      };
+    });
+
+    return {
+      status: 200,
+      body: {
+        spreadsheetId,
+        valueRanges,
+      },
+    };
+  }
+
+  /**
+   * `spreadsheets.values.batchUpdate`
+   */
+  private valuesBatchUpdate(spreadsheetId: string, body: { valueInputOption?: string; data?: Array<{ range: string; values: unknown[][] }> }): FakeResponse {
+    const spreadsheet = this.spreadsheets.get(spreadsheetId);
+    if (!spreadsheet) return this.notFound();
+
+    const data = body?.data ?? [];
+    let totalUpdatedRows = 0;
+    let totalUpdatedColumns = 0;
+    let totalUpdatedCells = 0;
+    const responses: unknown[] = [];
+
+    for (const item of data) {
+      let target: ResolvedRange;
+      try {
+        target = this.resolve(spreadsheet, item.range);
+      } catch (error) {
+        return this.badRequest((error as Error).message);
+      }
+
+      const { sheet, startRow, startCol } = target;
+      const values = item.values ?? [];
+
+      const gridError = this.checkGrid(sheet, item.range, target, values);
+      if (gridError) return gridError;
+
+      let updatedRows = 0;
+      let updatedColumns = 0;
+      let updatedCells = 0;
+      values.forEach((row, r) => {
+        if (row.length) updatedRows++;
+        updatedColumns = Math.max(updatedColumns, row.length);
+        row.forEach((value, c) => {
+          if (value === null || value === undefined) return;
+          sheet.cells.set(`${startRow + r}:${startCol + c}`, String(value));
+          updatedCells++;
+        });
+      });
+
+      const endRow = startRow + Math.max(values.length, 1) - 1;
+      const endCol = startCol + Math.max(updatedColumns, 1) - 1;
+
+      totalUpdatedRows += updatedRows;
+      totalUpdatedColumns = Math.max(totalUpdatedColumns, updatedColumns);
+      totalUpdatedCells += updatedCells;
+
+      responses.push({
+        spreadsheetId,
+        updatedRange: formatRange(sheet.title, startRow, startCol, endRow, endCol),
+        updatedRows,
+        updatedColumns,
+        updatedCells,
+      });
+    }
+
+    return {
+      status: 200,
+      body: {
+        spreadsheetId,
+        totalUpdatedRows,
+        totalUpdatedColumns,
+        totalUpdatedCells,
+        totalUpdatedSheets: new Set(responses.map((r) => ((r as { updatedRange: string }).updatedRange.split('!')[0]))).size,
+        responses,
+      },
+    };
+  }
   /**
    * `spreadsheets.values.get`. A read whose range reaches past the grid is refused exactly the
    * way a write in the same position is refused. That is the strict reading, and the library
@@ -677,7 +995,6 @@ export class FakeSheets {
     }
 
     const insertDataOption = parsed.searchParams.get('insertDataOption') ?? 'OVERWRITE';
-    if (insertDataOption === 'INSERT_ROWS') return this.badRequest('The fake only models insertDataOption=OVERWRITE');
 
     const { sheet, startCol, endCol } = target;
     // the API looks for the last row of the table inside the searched columns
@@ -695,6 +1012,26 @@ export class FakeSheets {
     let updatedColumns = 0;
     values.forEach((row) => (updatedColumns = Math.max(updatedColumns, row.length)));
 
+    if (insertDataOption === 'INSERT_ROWS') {
+      const shiftRows = values.length;
+      if (shiftRows > 0) {
+        const toShift: { r: number; c: number; val: string }[] = [];
+        sheet.cells.forEach((value, key) => {
+          const [r, c] = key.split(':').map(Number);
+          if (r >= writeStart) {
+            toShift.push({ r, c, val: value });
+          }
+        });
+        toShift.forEach(({ r, c }) => {
+          sheet.cells.delete(`${r}:${c}`);
+        });
+        toShift.forEach(({ r, c, val }) => {
+          sheet.cells.set(`${r + shiftRows}:${c}`, val);
+        });
+        sheet.rowCount += shiftRows;
+      }
+    }
+
     // append grows the grid instead of failing
     const neededRows = writeStart + values.length - 1;
     const neededCols = startCol + updatedColumns - 1;
@@ -709,7 +1046,6 @@ export class FakeSheets {
         updatedCells++;
       });
     });
-
     return {
       status: 200,
       body: {
@@ -773,12 +1109,15 @@ export class FakeSheets {
   }
 
   private renderSheetProperties(sheet: FakeWorksheet): any {
+    const gridProperties: any = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+    if (sheet.frozenRowCount !== undefined) gridProperties.frozenRowCount = sheet.frozenRowCount;
+    if (sheet.frozenColumnCount !== undefined) gridProperties.frozenColumnCount = sheet.frozenColumnCount;
     return {
       sheetId: sheet.sheetId,
       title: sheet.title,
       index: sheet.index,
       sheetType: 'GRID',
-      gridProperties: { rowCount: sheet.rowCount, columnCount: sheet.columnCount },
+      gridProperties,
     };
   }
 
@@ -787,6 +1126,7 @@ export class FakeSheets {
       spreadsheetId: spreadsheet.spreadsheetId,
       properties: { title: spreadsheet.title, locale: 'en_US', timeZone: 'Etc/GMT' },
       sheets: spreadsheet.sheets.map((sheet) => ({ properties: this.renderSheetProperties(sheet) })),
+      developerMetadata: spreadsheet.developerMetadata || [],
       spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheet.spreadsheetId}/edit`,
     };
   }

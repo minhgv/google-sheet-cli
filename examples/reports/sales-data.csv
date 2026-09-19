@@ -1,0 +1,9 @@
+order_id,date,region,customer,units,unit_price,discount_rate
+00101,2026-01-10,North America,Acme Corporation,25,120.00,0.10
+00102,2026-01-14,Europe,Starlight Dynamics,12,350.00,0.05
+00103,2026-01-22,APAC,Tokyo Precision Robotics,40,95.00,0.15
+00104,2026-02-05,North America,Nexus Cloud Services,8,850.00,0.00
+00105,2026-02-18,Latin America,Sao Paulo AgroTech,50,45.00,0.08
+00106,2026-03-02,Europe,Berlin FinTech GmbH,15,420.00,0.12
+00107,2026-03-15,APAC,Singapore Port Logistics,30,180.00,0.10
+00108,2026-03-28,North America,Apex BioLabs,10,600.00,0.05

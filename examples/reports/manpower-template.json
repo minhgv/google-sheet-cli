@@ -1,0 +1,43 @@
+{
+  "id": "manpower-modernization-v1",
+  "version": 1,
+  "kind": "manpower",
+  "title": "Platform Modernization & Automation Manpower Estimation",
+  "description": "Multi-module engineering effort and budget estimation with role rate multipliers and scenario simulations.",
+  "policy": {
+    "strictTypes": true,
+    "treatMissingAsZero": false,
+    "maxInputRows": 50000
+  },
+  "config": {
+    "currency": "USD",
+    "effortUnit": "person-days",
+    "globalContingencyPercent": 20,
+    "baseWorkingDaysPerMonth": 22,
+    "roleRates": {
+      "Lead Architect": 1200,
+      "Senior Backend Engineer": 850,
+      "Senior Frontend Engineer": 800,
+      "QA Automation Lead": 650,
+      "DevOps Specialist": 900,
+      "Project Manager": 750
+    },
+    "scenarios": [
+      {
+        "name": "Optimistic (-10% complexity, 10% contingency)",
+        "complexityMultiplier": 0.9,
+        "contingencyPercent": 10
+      },
+      {
+        "name": "Base Plan (Standard complexity, 20% contingency)",
+        "complexityMultiplier": 1.0,
+        "contingencyPercent": 20
+      },
+      {
+        "name": "Pessimistic (+25% complexity, 35% contingency)",
+        "complexityMultiplier": 1.25,
+        "contingencyPercent": 35
+      }
+    ]
+  }
+}

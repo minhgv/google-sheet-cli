@@ -1,5 +1,5 @@
 import { Args, Command, Flags } from '@oclif/core';
-import { FlagInput, OutputArgs, OutputFlags } from '@oclif/core/interfaces';
+import { FlagInput } from '@oclif/core/interfaces';
 import { ux } from '@oclif/core/ux';
 import { createInterface } from 'readline';
 import { normalizeCredentials } from './credentials';
@@ -30,31 +30,73 @@ export const valueInputOption = Flags.string({
 });
 
 export const useOauth = Flags.boolean({
+  helpGroup: 'Authentication',
   description: 'Use OAuth 2.0 user authentication instead of service account',
   required: false,
   env: 'GSHEET_USE_OAUTH',
 });
 
 export const clientSecretFile = Flags.string({
+  helpGroup: 'Authentication',
   description: 'Path to OAuth 2.0 client_secret.json (Desktop App type)',
   required: false,
   env: 'GSHEET_CLIENT_SECRET_FILE',
 });
 
+export const clientEmail = Flags.string({
+  helpGroup: 'Authentication',
+  char: 'c',
+  env: 'GSHEET_CLIENT_EMAIL',
+  description: 'The client email to use for authentication. Uses the GSHEET_CLIENT_EMAIL env variable if not provided.',
+  required: false,
+});
+
+export const privateKey = Flags.string({
+  helpGroup: 'Authentication',
+  char: 'p',
+  env: 'GSHEET_PRIVATE_KEY',
+  description: 'The private key to use for authentication. Uses the GSHEET_PRIVATE_KEY env variable if not provided.',
+  required: false,
+});
+
+export const credentialsFile = Flags.string({
+  helpGroup: 'Authentication',
+  char: 'f',
+  env: 'GSHEET_CREDENTIALS_FILE',
+  description:
+    'Path to the service account JSON file to read the credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The clientEmail and privateKey flags take precedence.',
+  required: false,
+});
+
+export const googleAuthFlags = {
+  clientEmail,
+  privateKey,
+  credentialsFile,
+  useOauth,
+  clientSecretFile,
+};
+
+export interface GoogleAuthFlags {
+  clientEmail?: string;
+  privateKey?: string;
+  credentialsFile?: string;
+  useOauth?: boolean;
+  clientSecretFile?: string;
+}
 export const data = Args.string({
   name: 'data',
   description: 'The data to be used as a JSON string - nested array [["1", "2", "3"]]',
   required: true,
 });
 
-interface CommonFlags {
-  rawOutput: boolean | undefined;
-  clientEmail: string | undefined;
-  privateKey: string | undefined;
-  credentialsFile: string | undefined;
-  useOauth: boolean | undefined;
-  clientSecretFile: string | undefined;
-  help: void;
+export const optionalData = Args.string({
+  name: 'data',
+  description: 'The data to be used as a JSON string - nested array [["1", "2", "3"]]',
+  required: false,
+});
+export interface CommonFlags extends GoogleAuthFlags {
+  rawOutput?: boolean;
+  help?: void;
 }
 
 /**
@@ -87,12 +129,12 @@ export const hiddenPrompt = (message: string): Promise<string> =>
 
     const restore = () => {
       muted = false;
-      (stderr as any).write = write;
+      (stderr as unknown as { write: typeof stderr.write }).write = write;
     };
 
     // readline echoes what is typed; swallow those writes while an answer is being entered
-    (stderr as any).write = (...args: any[]) => (muted ? true : (write as any).apply(stderr, args));
-
+    (stderr as unknown as { write: (...args: unknown[]) => boolean }).write = (...args: unknown[]) =>
+      muted ? true : (write as (...a: unknown[]) => boolean).apply(stderr, args);
     const rl = createInterface({ input: process.stdin, output: stderr, terminal: true });
 
     rl.on('close', () => {
@@ -121,6 +163,56 @@ export const hiddenPrompt = (message: string): Promise<string> =>
     ask();
   });
 
+export async function resolveGoogleSheetAuth(
+  flags: GoogleAuthFlags,
+  options?: { prompt?: boolean }
+): Promise<GoogleSheet> {
+  const gsheet = factory.createGoogleSheet();
+  const allowPrompt = options?.prompt !== false;
+
+  // OAuth 2.0 takes precedence when explicitly requested or when no service account credentials exist
+  const hasServiceAccountCreds = Boolean(flags?.clientEmail || flags?.privateKey || flags?.credentialsFile);
+  const useOauth = Boolean(
+    flags?.useOauth ||
+      (!hasServiceAccountCreds &&
+        !process.env.GSHEET_CLIENT_EMAIL &&
+        !process.env.GSHEET_PRIVATE_KEY &&
+        !process.env.GSHEET_CREDENTIALS_FILE)
+  );
+
+  if (useOauth) {
+    await gsheet.authorizeOAuth(flags?.clientSecretFile);
+  } else {
+    // Only prompt for what the flags, the env and the credentials file left missing.
+    const credentials = normalizeCredentials({
+      client_email: flags?.clientEmail,
+      private_key: flags?.privateKey,
+      credentialsFile: flags?.credentialsFile,
+    });
+
+    let client_email = credentials.client_email;
+    let private_key = credentials.private_key;
+
+    if (!client_email && allowPrompt) {
+      client_email = await hiddenPrompt('What is your client email?');
+    }
+    if (!private_key && allowPrompt) {
+      private_key = await hiddenPrompt('What is your private key?');
+    }
+
+    if (!client_email || !private_key) {
+      throw new Error('Google Sheets authentication requires client_email and private_key.');
+    }
+
+    await gsheet.authorize({
+      client_email,
+      private_key,
+    });
+  }
+
+  return gsheet;
+}
+
 export default abstract class extends Command {
   private rawLogs: boolean = false;
   public gsheet!: GoogleSheet;
@@ -133,42 +225,8 @@ export default abstract class extends Command {
       default: false,
       required: false,
     }),
-    clientEmail: Flags.string({
-      helpGroup: 'Authentication',
-      char: 'c',
-      env: 'GSHEET_CLIENT_EMAIL',
-      description: 'The client email to use for authentication. Uses the GSHEET_CLIENT_EMAIL env variable if not provided.',
-      required: false,
-    }),
-    privateKey: Flags.string({
-      helpGroup: 'Authentication',
-      char: 'p',
-      env: 'GSHEET_PRIVATE_KEY',
-      description: 'The private key to use for authentication. Uses the GSHEET_PRIVATE_KEY env variable if not provided.',
-      required: false,
-    }),
-    credentialsFile: Flags.string({
-      helpGroup: 'Authentication',
-      char: 'f',
-      env: 'GSHEET_CREDENTIALS_FILE',
-      description:
-        'Path to the service account JSON file to read the credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The clientEmail and privateKey flags take precedence.',
-      required: false,
-    }),
-    useOauth: Flags.boolean({
-      helpGroup: 'Authentication',
-      description: 'Use OAuth 2.0 user authentication instead of service account',
-      env: 'GSHEET_USE_OAUTH',
-      required: false,
-    }),
-    clientSecretFile: Flags.string({
-      helpGroup: 'Authentication',
-      description: 'Path to OAuth 2.0 client_secret.json (Desktop App type)',
-      env: 'GSHEET_CLIENT_SECRET_FILE',
-      required: false,
-    }),
+    ...googleAuthFlags,
   } as FlagInput<CommonFlags>;
-
   async start(message: string) {
     if (!this.rawLogs) {
       ux.action.start(message);
@@ -181,7 +239,7 @@ export default abstract class extends Command {
     }
   }
 
-  async logRaw(message: string, raw?: any) {
+  async logRaw(message: string, raw?: unknown) {
     if (this.rawLogs) {
       this.log(JSON.stringify(raw, null, 2));
     } else {
@@ -191,32 +249,10 @@ export default abstract class extends Command {
 
   async init() {
     // do some initialization
-    const { flags } = await this.parse<CommonFlags, OutputFlags<any>, OutputArgs<any>>(<any>this.constructor);
+    const parsed = await this.parse(this.constructor as typeof Command);
+    const flags = parsed.flags as unknown as CommonFlags;
     this.rawLogs = !!flags?.rawOutput;
-
-    const gsheet = factory.createGoogleSheet();
-
-    // OAuth 2.0 takes precedence when explicitly requested or when no service account credentials exist
-    const hasServiceAccountCreds = flags?.clientEmail || flags?.privateKey || flags?.credentialsFile;
-    const useOauth = flags?.useOauth || (!hasServiceAccountCreds && !process.env.GSHEET_CLIENT_EMAIL && !process.env.GSHEET_PRIVATE_KEY && !process.env.GSHEET_CREDENTIALS_FILE);
-
-    if (useOauth) {
-      await gsheet.authorizeOAuth(flags?.clientSecretFile);
-    } else {
-      // Only prompt for what the flags, the env and the credentials file left missing.
-      const credentials = normalizeCredentials({
-        client_email: flags?.clientEmail,
-        private_key: flags?.privateKey,
-        credentialsFile: flags?.credentialsFile,
-      });
-
-      await gsheet.authorize({
-        client_email: credentials.client_email ?? (await hiddenPrompt('What is your client email?')),
-        private_key: credentials.private_key ?? (await hiddenPrompt('What is your private key?')),
-      });
-    }
-
-    this.gsheet = gsheet;
+    this.gsheet = await resolveGoogleSheetAuth(flags, { prompt: true });
   }
 
   async catch(err: Error) {

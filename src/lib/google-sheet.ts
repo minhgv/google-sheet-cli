@@ -4,6 +4,27 @@ import { CredentialsInput, normalizeCredentials } from './credentials';
 import { getAuthenticatedClient } from './oauth';
 import { log } from './log';
 import { colToA, getLongestArray, getRange, parseRange, rangeWorksheet, requiredGrid } from './utils';
+import {
+  a1ToCol,
+  colToA1,
+  DEFAULT_BATCH_GET_CHUNK_SIZE,
+  DEFAULT_CHUNK_BYTE_SIZE,
+  escapeWorksheetTitle,
+  extractFormulaText,
+  findFormulaOverwrites,
+  FormulaConflict,
+  formatA1Cell,
+  formatBoundedA1Range,
+  isFormula,
+  METADATA_KEY_REPORT_MANAGED,
+  packUpdateBatches,
+  parseA1Cell,
+  parseStrictA1Range,
+  SheetManagedMetadata,
+  toGoogleExtendedValue,
+  toGoogleNumberFormat,
+} from './sheet-batch';
+import type { ReportCell, ReportDocument, ReportFormula, ReportNumberFormat, ReportSheet } from './report/types';
 
 export namespace GoogleSheetCli {
   export interface Credentials {
@@ -18,6 +39,17 @@ export namespace GoogleSheetCli {
     RAW = 'RAW',
   }
 
+  export enum ValueRenderOption {
+    FORMATTED_VALUE = 'FORMATTED_VALUE',
+    UNFORMATTED_VALUE = 'UNFORMATTED_VALUE',
+    FORMULA = 'FORMULA',
+  }
+
+  export enum DateTimeRenderOption {
+    SERIAL_NUMBER = 'SERIAL_NUMBER',
+    FORMATTED_STRING = 'FORMATTED_STRING',
+  }
+
   export interface QueryOptions {
     minCol?: number;
     maxCol?: number;
@@ -27,6 +59,9 @@ export namespace GoogleSheetCli {
     valueInputOption?: ValueInputOption;
     worksheetTitle?: string | null;
     hasHeaderRow?: boolean;
+    valueRenderOption?: ValueRenderOption;
+    dateTimeRenderOption?: DateTimeRenderOption;
+    rawOnly?: boolean;
   }
 
   export interface FormattedData {
@@ -38,6 +73,87 @@ export namespace GoogleSheetCli {
     formatted: FormattedData[];
     header: string[];
     range?: string | null;
+  }
+
+  export interface BatchGetOptions {
+    valueRenderOption?: ValueRenderOption;
+    dateTimeRenderOption?: DateTimeRenderOption;
+    chunkSize?: number;
+  }
+
+  export interface ValueRangeResult {
+    range: string;
+    values: RawData;
+  }
+
+  export interface BatchUpdateOptions {
+    valueInputOption?: ValueInputOption;
+    dryRun?: boolean;
+    overwriteFormulas?: boolean;
+    chunkByteSize?: number;
+    maxRowsPerChunk?: number;
+  }
+
+  export interface BatchUpdateChange {
+    range: string;
+    before?: RawData;
+    after: RawData;
+    formulasOverwritten?: string[];
+  }
+
+  export interface BatchUpdateReceipt {
+    spreadsheetId: string;
+    updatedRanges: string[];
+    totalRowsUpdated: number;
+    totalColumnsUpdated: number;
+    totalCellsUpdated: number;
+    dryRun: boolean;
+    changes?: BatchUpdateChange[];
+    batchesExecuted: number;
+  }
+
+  export interface AppendTableOptions {
+    worksheetTitle?: string | null;
+    range?: string;
+    valueInputOption?: ValueInputOption;
+    insertDataOption?: 'OVERWRITE' | 'INSERT_ROWS';
+  }
+
+  export interface AppendTableResult {
+    spreadsheetId: string;
+    tableRange: string;
+    updatedRange: string;
+    updatedRows: number;
+    updatedColumns: number;
+    updatedCells: number;
+  }
+
+  export interface ApplyReportOptions {
+    dryRun?: boolean;
+    overwriteFormulas?: boolean;
+    overwrite?: boolean;
+  }
+  export interface ApplyReportReceipt {
+    spreadsheetId: string;
+    templateId: string;
+    templateVersion: string | number;
+    sourceHash: string;
+    dryRun: boolean;
+    sheetsApplied: {
+      name: string;
+      writtenRange: string;
+      rowsCount: number;
+      colsCount: number;
+      clearedRange?: string;
+    }[];
+    formulasProtected: number;
+    formulasOverwritten: number;
+  }
+
+  export interface WorksheetFormatting {
+    freezeRows?: number;
+    columnWidths?: { column: number; width: number }[];
+    numberFormats?: { column: number; format: string; startRow?: number; endRow?: number }[];
   }
 }
 
@@ -89,10 +205,11 @@ const QUOTA_BACKOFF_MS = [3_000, 12_000, 48_000];
  * one is meant to be.
  */
 const RETRY_CONFIG = {
-  retryBackoff: (error: any, defaultBackoffMs: number): Promise<void> => {
+  retryBackoff: (error: unknown, defaultBackoffMs: number): Promise<void> => {
+    const errObj = error && typeof error === 'object' ? (error as { config?: { retryConfig?: { currentRetryAttempt?: number } }; response?: { status?: number } }) : undefined;
     // gaxios has already counted this attempt when it calls us, so the first retry is 1.
-    const attempt: number = error?.config?.retryConfig?.currentRetryAttempt || 1;
-    const quota = error?.response?.status === 429;
+    const attempt: number = errObj?.config?.retryConfig?.currentRetryAttempt || 1;
+    const quota = errObj?.response?.status === 429;
     const ms = quota ? QUOTA_BACKOFF_MS[attempt - 1] ?? QUOTA_BACKOFF_MS[QUOTA_BACKOFF_MS.length - 1] : defaultBackoffMs;
     // A silent 48 second pause is indistinguishable from a hang, so say what is being waited for.
     if (quota) warn(`quota exceeded, retrying in ${Math.round(ms / 1000)}s (attempt ${attempt} of ${QUOTA_BACKOFF_MS.length})`);
@@ -101,7 +218,7 @@ const RETRY_CONFIG = {
 };
 
 /**
- * GoogleSheet helper class for CRUD operations
+ * GoogleSheet helper class for CRUD and Batch operations
  *
  * @export
  * @class GoogleSheet
@@ -231,6 +348,8 @@ export default class GoogleSheet {
     const res = await this.sheets.spreadsheets.values.get({
       spreadsheetId: spreadsheetId || this.spreadsheetId,
       range: getRange(sanitizedOptions),
+      valueRenderOption: options.valueRenderOption,
+      dateTimeRenderOption: options.dateTimeRenderOption,
     });
 
     const range = res.data.range;
@@ -239,7 +358,13 @@ export default class GoogleSheet {
     let header: string[] = [];
     if (sanitizedOptions.hasHeaderRow) {
       if (!sanitizedOptions.minRow || sanitizedOptions.minRow <= 1) {
-        [header, ...values] = values || [];
+        if (values && values.length > 0) {
+          header = (values[0] as string[]) || [];
+          values = values.slice(1);
+        } else {
+          header = [];
+          values = [];
+        }
       } else {
         const res = await this.sheets.spreadsheets.values.get({
           spreadsheetId: spreadsheetId || this.spreadsheetId,
@@ -250,6 +375,8 @@ export default class GoogleSheet {
             maxRow: 1,
             range: undefined,
           }),
+          valueRenderOption: options.valueRenderOption,
+          dateTimeRenderOption: options.dateTimeRenderOption,
         });
         [header] = res.data.values ?? [[]];
         if (!header.length) throw new Error('No header row exists');
@@ -259,29 +386,6 @@ export default class GoogleSheet {
     // Where the generated `(A)`, `(B)` labels below start counting, and how many of them there
     // are. With an explicit minCol it is minCol, as it always was. With minCol absent it depends
     // on whether 2.2.x got this far at all, and the two cases are deliberately different.
-    //
-    // 2.2.x used 0 here. `colToA` refuses anything below 1, and the loop below only calls it for
-    // a blank heading, so `colToA(0)` was reached exactly when minCol was absent *and* header[0]
-    // was falsy - and only at c === 0, because for c >= 1 the argument was already at least 1.
-    // That splits every call into two populations that cannot overlap, since one call has one
-    // header[0]:
-    //
-    //   header[0] present -> 2.2.x returned a result. Its generated labels were wrong: with
-    //                        origin 0 it named column B "(A)" and column D "(C)", one column to
-    //                        the left of the cell each label sits over, and the same arithmetic
-    //                        emitted one label too many when the read returned no rows. Those
-    //                        wrong labels are the keys of the `formatted` objects, and the
-    //                        GitHub action serialises them into its `results` output, so a
-    //                        workflow may be reading them today. They are kept. Do not "fix"
-    //                        them here: correcting them is a change to output that currently
-    //                        works, which belongs in a release that announces it.
-    //   header[0] absent  -> 2.2.x threw `col has to be greater than 1` and returned nothing.
-    //                        Nothing can depend on a throw, so this is the one place free to use
-    //                        the origin the range actually has: `getRange` reads from
-    //                        `colToA(minCol || 1)`, so column 1 it is.
-    //
-    // The asymmetry is the point. It preserves everything that worked and unblocks everything
-    // that did not, and it is measured against published 2.2.0 in test-docs/revive-v3.md.
     const returnedOn22x = Boolean(header && header[0]);
     const labelOrigin = sanitizedOptions.minCol || (returnedOn22x ? 0 : 1);
 
@@ -297,27 +401,89 @@ export default class GoogleSheet {
       header[c] = header[c] || `(${colToA(c + labelOrigin)})`;
     }
 
-    let formatted: GoogleSheetCli.FormattedData[] = [];
-    let rawData: GoogleSheetCli.RawData = [];
+    const rawOnly = Boolean(options.rawOnly);
+    const formatted: GoogleSheetCli.FormattedData[] = rawOnly ? [] : new Array(maxRow);
+    const rawData: GoogleSheetCli.RawData = new Array(maxRow);
+
     for (let r = 0; r < maxRow; r++) {
       const row = values?.[r] || [];
-      const rawRow = [];
-      let set = {};
-      for (let c = 0; c < maxCol; c++) {
-        const heading = header[c];
-        const cell = row[c] || '';
-        rawRow[c] = cell;
-        set = { ...set, [heading]: cell };
+      const rawRow: (string | number | boolean | null)[] = new Array(maxCol);
+      let set: GoogleSheetCli.FormattedData | undefined;
+      if (!rawOnly) {
+        set = {};
       }
-      formatted = [...formatted, set];
-      rawData = [...rawData, rawRow];
+
+      for (let c = 0; c < maxCol; c++) {
+        const cell = row[c] !== undefined && row[c] !== null ? row[c] : '';
+        rawRow[c] = cell;
+        if (!rawOnly && set) {
+          const heading = header[c];
+          set[heading] = typeof cell === 'string' ? cell : String(cell);
+        }
+      }
+
+      if (!rawOnly && set) {
+        formatted[r] = set;
+      }
+      rawData[r] = rawRow;
     }
 
     return { rawData, formatted, header, range };
   }
 
   /**
-   * Append row data to a worksheet, starting after the last row in a specific column
+   * Batch get multiple ranges in a single or bounded set of requests without per-range metadata calls.
+   * Returns results in exact input order.
+   *
+   * @param {string[]} ranges
+   * @param {GoogleSheetCli.BatchGetOptions} [options={}]
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.ValueRangeResult[]>}
+   * @memberof GoogleSheet
+   */
+  async getDataBatch(
+    ranges: string[],
+    options: GoogleSheetCli.BatchGetOptions = {},
+    spreadsheetId?: string
+  ): Promise<GoogleSheetCli.ValueRangeResult[]> {
+    if (!ranges || !Array.isArray(ranges) || ranges.length === 0) {
+      return [];
+    }
+
+    // Strict prevalidation of all ranges
+    for (const r of ranges) {
+      parseStrictA1Range(r);
+    }
+
+    const targetSpreadsheetId = spreadsheetId || this.spreadsheetId;
+    const chunkSize = options.chunkSize || DEFAULT_BATCH_GET_CHUNK_SIZE;
+    const results: GoogleSheetCli.ValueRangeResult[] = [];
+
+    for (let i = 0; i < ranges.length; i += chunkSize) {
+      const chunkRanges = ranges.slice(i, i + chunkSize);
+      const response = await this.sheets.spreadsheets.values.batchGet({
+        spreadsheetId: targetSpreadsheetId,
+        ranges: chunkRanges,
+        valueRenderOption: options.valueRenderOption,
+        dateTimeRenderOption: options.dateTimeRenderOption,
+      });
+
+      const valueRanges = response.data.valueRanges || [];
+      for (let idx = 0; idx < chunkRanges.length; idx++) {
+        const requestedRange = chunkRanges[idx];
+        const vr = valueRanges[idx];
+        results.push({
+          range: vr?.range || requestedRange,
+          values: vr?.values || [],
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Append row data to a worksheet, starting after the last row in a specific column (Historical 2.x/3.x contract)
    *
    * @param {GoogleSheetCli.RawData} data
    * @param {GoogleSheetCli.QueryOptions} options
@@ -326,67 +492,110 @@ export default class GoogleSheet {
    * @memberof GoogleSheet
    */
   async appendData(data: GoogleSheetCli.RawData, options: GoogleSheetCli.QueryOptions, spreadsheetId?: string): Promise<void> {
-    // `getData` fills `worksheetTitle` in on the object it is handed, from the range or from the
-    // title remembered on the instance. Hand it a copy: `updateData` has to see the title the
-    // caller passed to *this* call, or its absence, not one an earlier command left behind.
-    // Only `minRow` is written back, because callers (and the action's e2e) read it there.
     const { rawData }: GoogleSheetCli.SheetData = await this.getData({ ...options }, spreadsheetId);
     options.minRow = rawData.length + 1;
     await this.updateData(data, options, spreadsheetId);
   }
 
   /**
-   * Update the data starting at a specific row and column
+   * Native contiguous table append using Sheets API spreadsheets.values.append without reading entire table.
    *
-   * @param {GoogleSheetCli.RawData} data [['A1', 'A2', 'A3', 'A4', 'A5'], ['B1', 'B2', 'B3', 'B4', 'B5', 'B6']]
+   * @param {GoogleSheetCli.RawData} data
+   * @param {GoogleSheetCli.AppendTableOptions} [options={}]
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.AppendTableResult>}
+   * @memberof GoogleSheet
+   */
+  async appendTableData(
+    data: GoogleSheetCli.RawData,
+    options: GoogleSheetCli.AppendTableOptions = {},
+    spreadsheetId?: string
+  ): Promise<GoogleSheetCli.AppendTableResult> {
+    if (!Array.isArray(data) || !data.every(Array.isArray)) {
+      throw new Error('Check "data" property - has to be supplied as nested array ([["1", "2"], ["3", "4"]])');
+    }
+
+    const targetSpreadsheetId = spreadsheetId || this.spreadsheetId;
+    const worksheetTitle = options.worksheetTitle || this.worksheetTitle;
+
+    let targetRange = options.range;
+    if (!targetRange) {
+      if (!worksheetTitle) {
+        throw new Error('Option property "worksheetTitle" or "range" is required');
+      }
+      targetRange = `${escapeWorksheetTitle(worksheetTitle)}!A1`;
+    }
+
+    if (!data.length) {
+      warn('no rows to append, nothing was sent to the spreadsheet');
+      return {
+        spreadsheetId: targetSpreadsheetId || '',
+        tableRange: targetRange,
+        updatedRange: targetRange,
+        updatedRows: 0,
+        updatedColumns: 0,
+        updatedCells: 0,
+      };
+    }
+
+    const response = await this.sheets.spreadsheets.values.append({
+      spreadsheetId: targetSpreadsheetId,
+      range: targetRange,
+      valueInputOption: options.valueInputOption || GoogleSheetCli.ValueInputOption.RAW,
+      insertDataOption: options.insertDataOption || 'INSERT_ROWS',
+      requestBody: {
+        values: data,
+      },
+    });
+
+    const updates = response.data.updates;
+    const updatedRange = updates?.updatedRange || targetRange;
+    const updatedRows = updates?.updatedRows ?? 0;
+    const updatedColumns = updates?.updatedColumns ?? 0;
+    const updatedCells = updates?.updatedCells ?? 0;
+
+    return {
+      spreadsheetId: targetSpreadsheetId || '',
+      tableRange: response.data.tableRange || targetRange,
+      updatedRange,
+      updatedRows,
+      updatedColumns,
+      updatedCells,
+    };
+  }
+
+  /**
+   * Update the data starting at a specific row and column (Historical 2.x/3.x contract)
+   *
+   * @param {GoogleSheetCli.RawData} data
    * @param {GoogleSheetCli.QueryOptions} options
    * @param {string} [spreadsheetId]
    * @returns {Promise<void>}
    * @memberof GoogleSheet
    */
   async updateData(data: GoogleSheetCli.RawData, options: GoogleSheetCli.QueryOptions, spreadsheetId?: string): Promise<void> {
-    // what the caller actually named, before the remembered title fills the gap. Only a title
-    // the caller passed can contradict a range; a title left over from an earlier command on
-    // the same instance is not something they said here.
     const namedTitle = options.worksheetTitle;
     options.worksheetTitle = options.worksheetTitle || this.worksheetTitle;
 
-    // Which worksheet this call resolves to follows getData: a quoted title inside the range
-    // wins, an unquoted one does not, because that is what 2.2.0 did.
     const { worksheetTitle: rangeTitle, quoted } = options.range ? rangeWorksheet(options.range) : { worksheetTitle: undefined, quoted: false };
 
-    // A caller who names one worksheet and a range naming another has said two contradictory
-    // things, whichever way the range spelled it. 2.2.0 resolved that silently in the range's
-    // favour, because getRange hands the range to the API untouched, and a fix release may not
-    // turn a call that worked into a failure. So: say which one wins, then do what 2.2.0 did.
-    // 3.0.0 keeps the warning rather than turning it into a refusal: a refusal would break a
-    // call every 2.x release completed, and every other break in that major is a platform
-    // move. See test-docs/revive-v3.md for the decision.
     const contradicted = Boolean(rangeTitle && namedTitle && rangeTitle !== namedTitle);
     if (contradicted) {
       warn(`range "${options.range}" targets worksheet "${rangeTitle}" but worksheetTitle is "${namedTitle}"; writing to "${rangeTitle}", as 2.2.x did`);
     }
 
-    // The range's worksheet is where the write lands whenever it won, so it is also the one to
-    // resolve and to grow. Growing the other one would add rows to a sheet nobody wrote to.
     const targetTitle = (quoted || contradicted ? rangeTitle : undefined) || options.worksheetTitle;
     if (!targetTitle) throw new Error('Specify worksheetTitle');
     if (!Array.isArray(data) || !data.every(Array.isArray)) {
       throw new Error('Check "data" property - has to be supplied as nested array ([["1", "2"], ["3", "4"]])');
     }
-    // A job that writes "whatever came in today" and finds nothing succeeded on every quiet day
-    // before 2.3.0, so an empty array stays a success. It just no longer costs a request.
+
     if (!data.length) {
       warn('no rows to write, nothing was sent to the spreadsheet');
       return;
     }
 
     const { rows, cols } = requiredGrid(data, options);
-    // Only size a grid the write is going to land in, and only read the one being sized. With an
-    // unquoted range and no explicit title the call resolves to the remembered worksheet while
-    // getRange sends the write to the range's, so growing here would add rows to a sheet nobody
-    // asked about - and fetching it would fail a write that 2.2.0 completed, whenever the
-    // remembered title has since been renamed away.
     if (!rangeTitle || rangeTitle === targetTitle) {
       const sheet = await this.getWorksheet(targetTitle, spreadsheetId);
       await this.ensureGridSize(sheet, rows, cols, spreadsheetId);
@@ -404,9 +613,826 @@ export default class GoogleSheet {
   }
 
   /**
+   * Batch update multiple ranges with prevalidation, formula overwrite protection,
+   * dry-run preview, bounded payload chunking (<=~2MB), and single grid-growth metadata check.
+   *
+   * @param {{ range: string; values: GoogleSheetCli.RawData }[]} updates
+   * @param {GoogleSheetCli.BatchUpdateOptions} [options={}]
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.BatchUpdateReceipt>}
+   * @memberof GoogleSheet
+   */
+  async updateDataBatch(
+    updates: { range: string; values: GoogleSheetCli.RawData }[],
+    options: GoogleSheetCli.BatchUpdateOptions = {},
+    spreadsheetId?: string
+  ): Promise<GoogleSheetCli.BatchUpdateReceipt> {
+    const targetSpreadsheetId = spreadsheetId || this.spreadsheetId || '';
+    if (!updates || !Array.isArray(updates) || updates.length === 0) {
+      return {
+        spreadsheetId: targetSpreadsheetId,
+        updatedRanges: [],
+        totalRowsUpdated: 0,
+        totalColumnsUpdated: 0,
+        totalCellsUpdated: 0,
+        dryRun: Boolean(options.dryRun),
+        batchesExecuted: 0,
+      };
+    }
+
+    // Step 1: Strict prevalidation of all updates
+    let totalRows = 0;
+    let totalCells = 0;
+    let maxCols = 0;
+
+    for (const update of updates) {
+      if (!update.range || typeof update.range !== 'string') {
+        throw new Error('Each update must have a valid non-empty range string');
+      }
+      const parsed = parseStrictA1Range(update.range);
+      if (!Array.isArray(update.values) || !update.values.every(Array.isArray)) {
+        throw new Error(`Update values for range "${update.range}" must be a 2D array`);
+      }
+
+      const rowCount = update.values.length;
+      totalRows += rowCount;
+      const updateMaxCols = update.values.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+      if (updateMaxCols > maxCols) maxCols = updateMaxCols;
+      for (const row of update.values) {
+        totalCells += row.length;
+      }
+
+      // Check bounding box fit if explicit end range given
+      if (parsed.isBounded && parsed.startRow && parsed.endRow && parsed.startCol && parsed.endCol) {
+        const allowedRows = parsed.endRow - parsed.startRow + 1;
+        const allowedCols = parsed.endCol - parsed.startCol + 1;
+        if (rowCount > allowedRows || updateMaxCols > allowedCols) {
+          throw new Error(
+            `Data (${rowCount}x${updateMaxCols}) exceeds explicit bounded range "${update.range}" (${allowedRows}x${allowedCols})`
+          );
+        }
+      }
+    }
+
+    // Step 2: Formula Overwrite Protection & Dry Run Inspection
+    const shouldInspectFormulas = options.dryRun || !options.overwriteFormulas;
+    let existingValues: GoogleSheetCli.ValueRangeResult[] = [];
+    let conflicts: FormulaConflict[] = [];
+
+    if (shouldInspectFormulas) {
+      const rangesToInspect = updates.map((u) => u.range);
+      existingValues = await this.getDataBatch(
+        rangesToInspect,
+        { valueRenderOption: GoogleSheetCli.ValueRenderOption.FORMULA },
+        targetSpreadsheetId
+      );
+      conflicts = findFormulaOverwrites(updates, existingValues);
+
+      if (conflicts.length > 0 && !options.overwriteFormulas && !options.dryRun) {
+        const conflictDetails = conflicts
+          .slice(0, 5)
+          .map((c) => `${c.cell} (existing: "${c.existingFormula}", incoming: ${JSON.stringify(c.incomingValue)})`)
+          .join('; ');
+        throw new Error(
+          `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflictDetails}`
+        );
+      }
+    }
+
+    // Step 3: Dry-Run Preview
+    if (options.dryRun) {
+      const changes: GoogleSheetCli.BatchUpdateChange[] = updates.map((u, i) => {
+        const conflictsForUpdate = conflicts.filter((c) => c.updateIndex === i);
+        return {
+          range: u.range,
+          before: existingValues[i]?.values,
+          after: u.values,
+          formulasOverwritten: conflictsForUpdate.map((c) => `${c.cell}: ${c.existingFormula}`),
+        };
+      });
+
+      return {
+        spreadsheetId: targetSpreadsheetId,
+        updatedRanges: updates.map((u) => u.range),
+        totalRowsUpdated: totalRows,
+        totalColumnsUpdated: maxCols,
+        totalCellsUpdated: totalCells,
+        dryRun: true,
+        changes,
+        batchesExecuted: 0,
+      };
+    }
+
+    // Step 4: Grid Growth Check once per job across all affected worksheets
+    const spreadsheet = await this.getSpreadsheet(targetSpreadsheetId);
+    const sheetMap = new Map<string, { sheetId: number; rowCount: number; columnCount: number }>();
+    for (const s of spreadsheet.sheets || []) {
+      const title = s.properties?.title;
+      if (title) {
+        sheetMap.set(title.toLowerCase(), {
+          sheetId: s.properties?.sheetId || 0,
+          rowCount: s.properties?.gridProperties?.rowCount || 0,
+          columnCount: s.properties?.gridProperties?.columnCount || 0,
+        });
+      }
+    }
+
+    const gridGrowthRequests: sheets_v4.Schema$Request[] = [];
+    const neededDimensions = new Map<string, { neededRows: number; neededCols: number }>();
+
+    for (const update of updates) {
+      const parsed = parseStrictA1Range(update.range);
+      const sheetName = (parsed.worksheetTitle || this.worksheetTitle || '').toLowerCase();
+      const startRow = parsed.startRow || 1;
+      const startCol = parsed.startCol || 1;
+      const longest = update.values.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+      const reqRows = startRow + update.values.length - 1;
+      const reqCols = startCol + longest - 1;
+
+      const current = neededDimensions.get(sheetName) || { neededRows: 0, neededCols: 0 };
+      neededDimensions.set(sheetName, {
+        neededRows: Math.max(current.neededRows, reqRows),
+        neededCols: Math.max(current.neededCols, reqCols),
+      });
+    }
+
+    for (const [sheetName, needed] of neededDimensions.entries()) {
+      const info = sheetMap.get(sheetName);
+      if (info) {
+        if (needed.neededRows > info.rowCount) {
+          gridGrowthRequests.push({
+            appendDimension: {
+              sheetId: info.sheetId,
+              dimension: 'ROWS',
+              length: needed.neededRows - info.rowCount,
+            },
+          });
+        }
+        if (needed.neededCols > info.columnCount) {
+          gridGrowthRequests.push({
+            appendDimension: {
+              sheetId: info.sheetId,
+              dimension: 'COLUMNS',
+              length: needed.neededCols - info.columnCount,
+            },
+          });
+        }
+      }
+    }
+
+    if (gridGrowthRequests.length > 0) {
+      await this.sheets.spreadsheets.batchUpdate({
+        spreadsheetId: targetSpreadsheetId,
+        requestBody: { requests: gridGrowthRequests },
+      });
+    }
+
+    // Step 5: Chunk and Execute Writes
+    const maxChunkBytes = options.chunkByteSize || DEFAULT_CHUNK_BYTE_SIZE;
+    const packedBatches = packUpdateBatches(updates, maxChunkBytes);
+    const completedRanges: string[] = [];
+    let batchesExecuted = 0;
+
+    for (let b = 0; b < packedBatches.length; b++) {
+      const batch = packedBatches[b];
+      const batchData: sheets_v4.Schema$ValueRange[] = batch.map((item) => ({
+        range: item.range,
+        values: item.values,
+      }));
+
+      try {
+        await this.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: targetSpreadsheetId,
+          requestBody: {
+            valueInputOption: options.valueInputOption || GoogleSheetCli.ValueInputOption.RAW,
+            data: batchData,
+          },
+        });
+        batchesExecuted++;
+        for (const item of batch) {
+          completedRanges.push(item.range);
+        }
+      } catch (error: unknown) {
+        const failedRanges = batch.map((item) => item.range).join(', ');
+        const msg = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Batch update failed at batch ${b + 1}/${packedBatches.length} [${failedRanges}]: ${msg}. Successfully completed ranges: ${completedRanges.length > 0 ? completedRanges.join(', ') : 'none'}`
+        );
+      }
+    }
+
+    return {
+      spreadsheetId: targetSpreadsheetId,
+      updatedRanges: completedRanges,
+      totalRowsUpdated: totalRows,
+      totalColumnsUpdated: maxCols,
+      totalCellsUpdated: totalCells,
+      dryRun: false,
+      batchesExecuted,
+    };
+  }
+
+  /**
+   * Apply ReportDocument to Google Sheets with presentation formatting, typed cell values,
+   * formula safety, and managed extent clearing for idempotent shorter reruns.
+   *
+   * @param {ReportDocument} document
+   * @param {GoogleSheetCli.ApplyReportOptions} [options={}]
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.ApplyReportReceipt>}
+   * @memberof GoogleSheet
+   */
+  async applyReport(
+    document: ReportDocument,
+    options: GoogleSheetCli.ApplyReportOptions = {},
+    spreadsheetId?: string
+  ): Promise<GoogleSheetCli.ApplyReportReceipt> {
+    if (!document || !document.sheets || !Array.isArray(document.sheets)) {
+      throw new Error('Invalid ReportDocument: sheets array is required');
+    }
+
+    const targetSpreadsheetId = spreadsheetId || this.spreadsheetId || '';
+    const spreadsheet = await this.getSpreadsheet(targetSpreadsheetId);
+    const existingSheets = new Map<string, sheets_v4.Schema$Sheet>();
+    const usedSheetIds = new Set<number>();
+
+    for (const s of spreadsheet.sheets || []) {
+      if (s.properties?.title) {
+        existingSheets.set(s.properties.title.toLowerCase(), s);
+      }
+      if (typeof s.properties?.sheetId === 'number') {
+        usedSheetIds.add(s.properties.sheetId);
+      }
+    }
+
+    const templateId = document.provenance?.templateId || '';
+    const templateVersion = document.provenance?.templateVersion || '1';
+    const sourceHash = document.provenance?.sourceHash || '';
+
+    // Step 1: Pre-calculate sheet IDs and extract developer metadata for all sheets
+    interface SheetApplyPlan {
+      sheet: ReportSheet;
+      sheetName: string;
+      sheetId: number;
+      isNewSheet: boolean;
+      start: { col: number; row: number };
+      startRowIdx: number;
+      startColIdx: number;
+      rowCount: number;
+      colCount: number;
+      endRowIdx: number;
+      endColIdx: number;
+      writtenRange: string;
+      inspectRange: string;
+      prevMetadata?: SheetManagedMetadata;
+      existingMetadataId?: number;
+      clearedRange?: string;
+      clearBounds?: { startRow: number; endRow: number; startCol: number; endCol: number };
+    }
+
+    const plans: SheetApplyPlan[] = [];
+    const rangesToInspect: string[] = [];
+    const inspectPlanIndices: number[] = [];
+
+    let nextAllocatedId = 100000;
+    const allocateSheetId = (): number => {
+      while (usedSheetIds.has(nextAllocatedId)) {
+        nextAllocatedId += Math.floor(Math.random() * 1000) + 1;
+      }
+      usedSheetIds.add(nextAllocatedId);
+      return nextAllocatedId;
+    };
+
+    for (const sheet of document.sheets) {
+      const sheetName = sheet.name;
+      const sheetObj = existingSheets.get(sheetName.toLowerCase());
+      const isNewSheet = !sheetObj;
+      const sheetId = sheetObj?.properties?.sheetId ?? allocateSheetId();
+
+      const start = sheet.startCell ? parseA1Cell(sheet.startCell) : { col: 1, row: 1 };
+      const startRowIdx = start.row - 1;
+      const startColIdx = start.col - 1;
+      const rowCount = sheet.rows.length;
+      const colCount = sheet.rows.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+      const endRowIdx = startRowIdx + rowCount;
+      const endColIdx = startColIdx + colCount;
+
+      const writtenRange = formatBoundedA1Range(
+        sheetName,
+        start.col,
+        start.row,
+        Math.max(start.col, start.col + colCount - 1),
+        Math.max(start.row, start.row + rowCount - 1)
+      );
+
+      // Extract existing managed developer metadata from sheet
+      let prevMetadata: SheetManagedMetadata | undefined;
+      let existingMetadataId: number | undefined;
+
+      const metadataList = [
+        ...(sheetObj?.developerMetadata || []),
+        ...(spreadsheet.developerMetadata || []).filter((dm) => dm.location?.sheetId === sheetId),
+      ];
+
+      for (const dm of metadataList) {
+        if (dm.metadataKey === METADATA_KEY_REPORT_MANAGED && dm.metadataValue) {
+          try {
+            const parsed = JSON.parse(dm.metadataValue) as SheetManagedMetadata;
+            if (parsed.templateId) {
+              prevMetadata = parsed;
+              existingMetadataId = dm.metadataId ?? undefined;
+              break;
+            }
+          } catch {
+            // Ignore malformed metadata
+          }
+        }
+      }
+
+      // Calculate bounded clear region
+      let clearedRange: string | undefined;
+      let clearBounds: { startRow: number; endRow: number; startCol: number; endCol: number } | undefined;
+
+      if (sheet.clearManagedRange || (prevMetadata && (prevMetadata.rowCount > rowCount || prevMetadata.colCount > colCount))) {
+        if (prevMetadata && prevMetadata.rowCount > 0 && prevMetadata.colCount > 0) {
+          const prevStartRowIdx = prevMetadata.startRow - 1;
+          const prevStartColIdx = prevMetadata.startCol - 1;
+          const prevEndRowIdx = prevStartRowIdx + prevMetadata.rowCount;
+          const prevEndColIdx = prevStartColIdx + prevMetadata.colCount;
+
+          const clearStartRow = Math.min(prevStartRowIdx, startRowIdx);
+          const clearEndRow = Math.max(prevEndRowIdx, endRowIdx);
+          const clearStartCol = Math.min(prevStartColIdx, startColIdx);
+          const clearEndCol = Math.max(prevEndColIdx, endColIdx);
+
+          clearBounds = {
+            startRow: clearStartRow,
+            endRow: clearEndRow,
+            startCol: clearStartCol,
+            endCol: clearEndCol,
+          };
+          clearedRange = formatBoundedA1Range(sheetName, clearStartCol + 1, clearStartRow + 1, clearEndCol, clearEndRow);
+        } else {
+          clearBounds = {
+            startRow: startRowIdx,
+            endRow: endRowIdx,
+            startCol: startColIdx,
+            endCol: endColIdx,
+          };
+          clearedRange = formatBoundedA1Range(sheetName, start.col, start.row, Math.max(start.col, start.col + colCount - 1), Math.max(start.row, start.row + rowCount - 1));
+        }
+      }
+
+      // Determine range to inspect for preflight
+      const inspectStartCol = clearBounds ? clearBounds.startCol + 1 : start.col;
+      const inspectStartRow = clearBounds ? clearBounds.startRow + 1 : start.row;
+      const inspectEndCol = clearBounds ? clearBounds.endCol : Math.max(start.col, start.col + colCount - 1);
+      const inspectEndRow = clearBounds ? clearBounds.endRow : Math.max(start.row, start.row + rowCount - 1);
+      const inspectRange = formatBoundedA1Range(sheetName, inspectStartCol, inspectStartRow, inspectEndCol, inspectEndRow);
+
+      const plan: SheetApplyPlan = {
+        sheet,
+        sheetName,
+        sheetId,
+        isNewSheet,
+        start,
+        startRowIdx,
+        startColIdx,
+        rowCount,
+        colCount,
+        endRowIdx,
+        endColIdx,
+        writtenRange,
+        inspectRange,
+        prevMetadata,
+        existingMetadataId,
+        clearedRange,
+        clearBounds,
+      };
+
+      plans.push(plan);
+
+      if (!isNewSheet) {
+        rangesToInspect.push(inspectRange);
+        inspectPlanIndices.push(plans.length - 1);
+      }
+    }
+
+    // Step 2: Preflight Inspection (Formulas and Unowned Data) across ALL sheets BEFORE any mutations
+    const existingValuesMap = new Map<number, GoogleSheetCli.RawData>();
+    if (rangesToInspect.length > 0) {
+      const fetched = await this.getDataBatch(
+        rangesToInspect,
+        { valueRenderOption: GoogleSheetCli.ValueRenderOption.FORMULA },
+        targetSpreadsheetId
+      );
+      for (let i = 0; i < fetched.length; i++) {
+        const planIdx = inspectPlanIndices[i];
+        existingValuesMap.set(planIdx, fetched[i].values || []);
+      }
+    }
+
+    let formulasProtectedCount = 0;
+    let formulasOverwrittenCount = 0;
+
+    for (let pIdx = 0; pIdx < plans.length; pIdx++) {
+      const plan = plans[pIdx];
+      if (plan.isNewSheet) continue;
+
+      const existingData = existingValuesMap.get(pIdx) || [];
+      const parsedInspect = parseStrictA1Range(plan.inspectRange);
+      const inspectBaseCol = parsedInspect.startCol || 1;
+      const inspectBaseRow = parsedInspect.startRow || 1;
+
+      const isOwnedCell = (col: number, row: number): boolean => {
+        if (!plan.prevMetadata || plan.prevMetadata.templateId !== templateId) {
+          return false;
+        }
+        const pStartRow = plan.prevMetadata.startRow;
+        const pStartCol = plan.prevMetadata.startCol;
+        const pEndRow = pStartRow + plan.prevMetadata.rowCount - 1;
+        const pEndCol = pStartCol + plan.prevMetadata.colCount - 1;
+        return row >= pStartRow && row <= pEndRow && col >= pStartCol && col <= pEndCol;
+      };
+
+      // Check for unowned non-empty cells
+      if (!options.overwrite) {
+        for (let r = 0; r < plan.rowCount; r++) {
+          const row = plan.sheet.rows[r] || [];
+          for (let c = 0; c < row.length; c++) {
+            if (row[c] === undefined) continue; // ragged row: missing cell untouched
+            const colNum = plan.start.col + c;
+            const rowNum = plan.start.row + r;
+
+            const existingR = rowNum - inspectBaseRow;
+            const existingC = colNum - inspectBaseCol;
+            const existingVal = existingData[existingR]?.[existingC];
+
+            const hasExistingValue = existingVal !== undefined && existingVal !== null && existingVal !== '';
+            if (hasExistingValue && !isOwnedCell(colNum, rowNum)) {
+              if (!options.dryRun) {
+                throw new Error(
+                  `Cannot overwrite unowned populated cell at "${plan.sheetName}!${formatA1Cell(colNum, rowNum)}" (existing: ${JSON.stringify(existingVal)}) without overwrite=true`
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // Check formula collisions and count protected / overwritten formulas
+      for (let r = 0; r < plan.rowCount; r++) {
+        const row = plan.sheet.rows[r] || [];
+        for (let c = 0; c < row.length; c++) {
+          const incomingCell = row[c];
+          if (incomingCell === undefined) continue; // ragged row: skipped, does not collide
+
+          const colNum = plan.start.col + c;
+          const rowNum = plan.start.row + r;
+          const existingR = rowNum - inspectBaseRow;
+          const existingC = colNum - inspectBaseCol;
+          const existingVal = existingData[existingR]?.[existingC];
+
+          if (typeof existingVal === 'string' && existingVal.startsWith('=')) {
+            const incomingFormula = extractFormulaText(incomingCell);
+            if (incomingFormula === existingVal) {
+              // Identical formula: safe refresh
+              continue;
+            }
+
+            if (!options.overwriteFormulas) {
+              formulasProtectedCount++;
+              if (!options.dryRun) {
+                throw new Error(
+                  `Formula collision at "${plan.sheetName}!${formatA1Cell(colNum, rowNum)}": existing "${existingVal}" protected. Set overwriteFormulas=true to proceed.`
+                );
+              }
+            } else {
+              formulasOverwrittenCount++;
+            }
+          }
+        }
+      }
+    }
+
+    // Step 3: Build Atomic Batch Requests for All Sheets
+    const batchRequests: sheets_v4.Schema$Request[] = [];
+    const sheetsApplied: GoogleSheetCli.ApplyReportReceipt['sheetsApplied'] = [];
+
+    // Missing sheets creation requests
+    for (const plan of plans) {
+      if (plan.isNewSheet) {
+        batchRequests.push({
+          addSheet: {
+            properties: {
+              sheetId: plan.sheetId,
+              title: plan.sheetName,
+            },
+          },
+        });
+      }
+    }
+
+    // Per-sheet mutations
+    for (const plan of plans) {
+      const { sheet, sheetName, sheetId, start, startRowIdx, startColIdx, rowCount, colCount, endRowIdx, endColIdx } = plan;
+      const sheetObj = existingSheets.get(sheetName.toLowerCase());
+
+      const gridRows = sheetObj?.properties?.gridProperties?.rowCount || 1000;
+      const gridCols = sheetObj?.properties?.gridProperties?.columnCount || 26;
+
+      // Ensure grid size
+      if (!plan.isNewSheet && (endRowIdx > gridRows || endColIdx > gridCols)) {
+        const addRows = Math.max(0, endRowIdx - gridRows);
+        const addCols = Math.max(0, endColIdx - gridCols);
+        if (addRows > 0) {
+          batchRequests.push({ appendDimension: { sheetId, dimension: 'ROWS', length: addRows } });
+        }
+        if (addCols > 0) {
+          batchRequests.push({ appendDimension: { sheetId, dimension: 'COLUMNS', length: addCols } });
+        }
+      }
+
+      // Bounded clearing
+      if (plan.clearBounds) {
+        batchRequests.push({
+          updateCells: {
+            range: {
+              sheetId,
+              startRowIndex: plan.clearBounds.startRow,
+              endRowIndex: plan.clearBounds.endRow,
+              startColumnIndex: plan.clearBounds.startCol,
+              endColumnIndex: plan.clearBounds.endCol,
+            },
+            fields: 'userEnteredValue',
+          },
+        });
+      }
+
+      // Build typed cell data
+      const rowData: sheets_v4.Schema$RowData[] = [];
+      for (const row of sheet.rows) {
+        const cellData: sheets_v4.Schema$CellData[] = [];
+        for (const cell of row) {
+          cellData.push({
+            userEnteredValue: toGoogleExtendedValue(cell),
+          });
+        }
+        rowData.push({ values: cellData });
+      }
+
+      batchRequests.push({
+        updateCells: {
+          rows: rowData,
+          start: {
+            sheetId,
+            rowIndex: startRowIdx,
+            columnIndex: startColIdx,
+          },
+          fields: 'userEnteredValue',
+        },
+      });
+
+      // Presentation: Freeze rows
+      if (typeof sheet.freezeRows === 'number' && sheet.freezeRows > 0) {
+        batchRequests.push({
+          updateSheetProperties: {
+            properties: {
+              sheetId,
+              gridProperties: {
+                frozenRowCount: sheet.freezeRows,
+              },
+            },
+            fields: 'gridProperties.frozenRowCount',
+          },
+        });
+      }
+
+      // Presentation: Column widths
+      if (sheet.columnWidths && Array.isArray(sheet.columnWidths)) {
+        for (let colIdx = 0; colIdx < sheet.columnWidths.length; colIdx++) {
+          const charWidth = sheet.columnWidths[colIdx];
+          if (typeof charWidth === 'number' && charWidth > 0) {
+            batchRequests.push({
+              updateDimensionProperties: {
+                range: {
+                  sheetId,
+                  dimension: 'COLUMNS',
+                  startIndex: startColIdx + colIdx,
+                  endIndex: startColIdx + colIdx + 1,
+                },
+                properties: {
+                  pixelSize: Math.round(charWidth * 8.5),
+                },
+                fields: 'pixelSize',
+              },
+            });
+          }
+        }
+      }
+
+      // Presentation: Number formats
+      if (sheet.numberFormats && Array.isArray(sheet.numberFormats)) {
+        for (const nf of sheet.numberFormats) {
+          const col0 = startColIdx + (nf.column - 1);
+          batchRequests.push({
+            repeatCell: {
+              range: {
+                sheetId,
+                startRowIndex: startRowIdx + (sheet.freezeRows || 0),
+                endRowIndex: endRowIdx,
+                startColumnIndex: col0,
+                endColumnIndex: col0 + 1,
+              },
+              cell: {
+                userEnteredFormat: {
+                  numberFormat: toGoogleNumberFormat(nf.format),
+                },
+              },
+              fields: 'userEnteredFormat.numberFormat',
+            },
+          });
+        }
+      }
+
+      // Provenance metadata tracking marker (Update if existing, Create if new)
+      const metadataPayload: SheetManagedMetadata = {
+        templateId,
+        templateVersion,
+        sourceHash,
+        startRow: start.row,
+        startCol: start.col,
+        rowCount,
+        colCount,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (plan.existingMetadataId) {
+        batchRequests.push({
+          updateDeveloperMetadata: {
+            dataFilters: [
+              {
+                developerMetadataLookup: {
+                  metadataId: plan.existingMetadataId,
+                },
+              },
+            ],
+            developerMetadata: {
+              metadataId: plan.existingMetadataId,
+              metadataKey: METADATA_KEY_REPORT_MANAGED,
+              metadataValue: JSON.stringify(metadataPayload),
+              location: {
+                sheetId,
+                locationType: 'SHEET',
+              },
+              visibility: 'DOCUMENT',
+            },
+            fields: 'metadataValue',
+          },
+        });
+      } else {
+        batchRequests.push({
+          createDeveloperMetadata: {
+            developerMetadata: {
+              metadataKey: METADATA_KEY_REPORT_MANAGED,
+              metadataValue: JSON.stringify(metadataPayload),
+              location: {
+                sheetId,
+                locationType: 'SHEET',
+              },
+              visibility: 'DOCUMENT',
+            },
+          },
+        });
+      }
+
+      sheetsApplied.push({
+        name: sheetName,
+        writtenRange: plan.writtenRange,
+        rowsCount: rowCount,
+        colsCount: colCount,
+        clearedRange: plan.clearedRange,
+      });
+    }
+
+    // Step 4: Execute atomic batchUpdate (dryRun sends NO mutation)
+    if (!options.dryRun && batchRequests.length > 0) {
+      await this.sheets.spreadsheets.batchUpdate({
+        spreadsheetId: targetSpreadsheetId,
+        requestBody: { requests: batchRequests },
+      });
+    }
+
+    return {
+      spreadsheetId: targetSpreadsheetId,
+      templateId,
+      templateVersion,
+      sourceHash,
+      dryRun: Boolean(options.dryRun),
+      sheetsApplied,
+      formulasProtected: formulasProtectedCount,
+      formulasOverwritten: formulasOverwrittenCount,
+    };
+  }
+  /**
+   * Narrow execution of structural/presentation batchUpdate requests on the spreadsheet
+   *
+   * @param {sheets_v4.Schema$Request[]} requests
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<sheets_v4.Schema$BatchUpdateSpreadsheetResponse>}
+   * @memberof GoogleSheet
+   */
+  async batchUpdateSpreadsheet(
+    requests: sheets_v4.Schema$Request[],
+    spreadsheetId?: string
+  ): Promise<sheets_v4.Schema$BatchUpdateSpreadsheetResponse> {
+    const response = await this.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: spreadsheetId || this.spreadsheetId,
+      requestBody: { requests },
+    });
+    return response.data;
+  }
+
+  /**
+   * Format a worksheet with freeze rows, column widths, and number formats
+   *
+   * @param {string} worksheetTitle
+   * @param {GoogleSheetCli.WorksheetFormatting} formatting
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<void>}
+   * @memberof GoogleSheet
+   */
+  async formatWorksheet(
+    worksheetTitle: string,
+    formatting: GoogleSheetCli.WorksheetFormatting,
+    spreadsheetId?: string
+  ): Promise<void> {
+    const sheet = await this.getWorksheet(worksheetTitle, spreadsheetId);
+    const sheetId = sheet.properties?.sheetId ?? 0;
+    const requests: sheets_v4.Schema$Request[] = [];
+
+    if (typeof formatting.freezeRows === 'number') {
+      requests.push({
+        updateSheetProperties: {
+          properties: {
+            sheetId,
+            gridProperties: {
+              frozenRowCount: formatting.freezeRows,
+            },
+          },
+          fields: 'gridProperties.frozenRowCount',
+        },
+      });
+    }
+
+    if (formatting.columnWidths && Array.isArray(formatting.columnWidths)) {
+      for (const col of formatting.columnWidths) {
+        requests.push({
+          updateDimensionProperties: {
+            range: {
+              sheetId,
+              dimension: 'COLUMNS',
+              startIndex: col.column - 1,
+              endIndex: col.column,
+            },
+            properties: {
+              pixelSize: Math.round(col.width * 8.5),
+            },
+            fields: 'pixelSize',
+          },
+        });
+      }
+    }
+
+    if (formatting.numberFormats && Array.isArray(formatting.numberFormats)) {
+      for (const nf of formatting.numberFormats) {
+        requests.push({
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: (nf.startRow ? nf.startRow - 1 : 0),
+              endRowIndex: nf.endRow,
+              startColumnIndex: nf.column - 1,
+              endColumnIndex: nf.column,
+            },
+            cell: {
+              userEnteredFormat: {
+                numberFormat: toGoogleNumberFormat(nf.format),
+              },
+            },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        });
+      }
+    }
+
+    if (requests.length > 0) {
+      await this.batchUpdateSpreadsheet(requests, spreadsheetId);
+    }
+  }
+
+  /**
    * Grow the worksheet grid so that it holds at least the requested number of rows and columns.
-   * The API never grows the grid for a values.update, so a write past the last row or column
-   * fails with "exceeds grid limits" unless the dimensions are appended first (#611).
    *
    * @param {sheets_v4.Schema$Sheet} sheet
    * @param {number} neededRows

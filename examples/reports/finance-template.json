@@ -1,0 +1,44 @@
+{
+  "id": "finance-cashflow-v1",
+  "version": 1,
+  "kind": "finance",
+  "title": "Corporate Cash Flow & Multi-Currency FX Reconciliation",
+  "description": "Multi-account cash flow reporting with multi-currency FX conversion, refund adjustments, and audit balance reconciliation.",
+  "policy": {
+    "strictTypes": true,
+    "treatMissingAsZero": false,
+    "duplicateKeyPolicy": "reject",
+    "maxInputRows": 50000
+  },
+  "config": {
+    "baseCurrency": "USD",
+    "tolerance": 0.01,
+    "dateWindow": {
+      "from": "2026-01-01",
+      "to": "2026-03-31"
+    },
+    "openingBalances": {
+      "Operating Account (Chase 0412)": 150000.00,
+      "Investment Treasury (SVB 9823)": 450000.00,
+      "APAC Regional Account (VCB 8892)": 100000.00
+    },
+    "expectedClosingBalances": {
+      "Operating Account (Chase 0412)": 204300.00,
+      "Investment Treasury (SVB 9823)": 415000.00,
+      "APAC Regional Account (VCB 8892)": 128500.00
+    },
+    "fxRates": [
+      { "date": "2026-01-01", "from": "EUR", "to": "USD", "rate": 1.0850, "source": "ECB" },
+      { "date": "2026-01-15", "from": "EUR", "to": "USD", "rate": 1.0920, "source": "ECB" },
+      { "date": "2026-02-01", "from": "EUR", "to": "USD", "rate": 1.0880, "source": "ECB" },
+      { "date": "2026-02-15", "from": "EUR", "to": "USD", "rate": 1.0950, "source": "ECB" },
+      { "date": "2026-03-01", "from": "EUR", "to": "USD", "rate": 1.0900, "source": "ECB" },
+      { "date": "2026-01-01", "from": "GBP", "to": "USD", "rate": 1.2750, "source": "BOE" },
+      { "date": "2026-02-01", "from": "GBP", "to": "USD", "rate": 1.2820, "source": "BOE" },
+      { "date": "2026-03-01", "from": "GBP", "to": "USD", "rate": 1.2780, "source": "BOE" },
+      { "date": "2026-01-01", "from": "VND", "to": "USD", "rate": 0.0000395, "source": "SBV" },
+      { "date": "2026-02-01", "from": "VND", "to": "USD", "rate": 0.0000392, "source": "SBV" },
+      { "date": "2026-03-01", "from": "VND", "to": "USD", "rate": 0.0000390, "source": "SBV" }
+    ]
+  }
+}

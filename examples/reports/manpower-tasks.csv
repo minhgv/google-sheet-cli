@@ -1,0 +1,10 @@
+id,module,role,description,quantity,unitEffort,complexity,contingency
+TSK-001,Report Engine,Lead Architect,Architecture and core plugin interface design,2,3.0,1.2,20
+TSK-002,Report Engine,Senior Backend Engineer,Declarative transforms and AST filter engine,5,2.0,1.2,20
+TSK-003,Report Engine,Senior Backend Engineer,Financial cash flow & FX rate reconciliation engine,4,2.5,1.1,20
+TSK-004,Report Engine,QA Automation Lead,End-to-end arithmetic & edge case test matrix,6,1.5,1.0,15
+TSK-005,XLSX Adapter,Senior Backend Engineer,ExcelJS cell styler and formula preservation adapter,4,2.0,1.3,25
+TSK-006,XLSX Adapter,DevOps Specialist,Zip preflight and memory benchmarking harness,2,2.0,1.0,15
+TSK-007,Google Backend,Senior Backend Engineer,Batch read/write chunking and rate-limit retry handler,3,2.5,1.2,20
+TSK-008,CLI & UX,Senior Frontend Engineer,Table formatting and preview rendering layer,4,1.5,1.0,15
+TSK-009,Delivery,Project Manager,Sprint planning and stakeholder milestone signoff,8,1.0,1.0,10
