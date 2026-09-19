@@ -197,6 +197,7 @@ These arrived in 2.3.0, not in 3.0.0, so they are new only to someone upgrading 
     - [Authentication Behavior: Cloud vs Local](#authentication-behavior-cloud-vs-local)
     - [Report Templates: Schemas, Policies, and Transforms](#report-templates-schemas-policies-and-transforms)
     - [Technical Invariants, Safety Guarantees, and Domain Policies](#technical-invariants-safety-guarantees-and-domain-policies)
+  - [Using with coding agents](#using-with-coding-agents)
 - [Command Topics](#command-topics)
 - [Info](#info)
   - [How to configure](#how-to-configure)
@@ -533,6 +534,15 @@ To guarantee reliability and prevent data corruption in automated pipelines, the
    * **Effort, not duration:** The manpower report engine calculates engineering effort (person-days, person-hours), role rate multipliers, scenario budgets, and contingency buffers. It does **not** compute calendar project scheduling durations or Gantt timelines.
 8. **Formula Injection Boundary:** Raw string values starting with `=`, `+`, `-`, `@`, or tab characters are sanitized (escaped with a leading single quote `'`) when written as data cells to prevent CSV/DDE formula injection vulnerabilities. Formulas are only evaluated when explicitly declared as `formulaTemplate` in report output column configurations.
 9. **Money Rounding Policy:** All financial and currency arithmetic uses exact decimal math (`decimal.js` with half-up rounding, default 2 decimal places, and tolerance `0.01`), eliminating floating-point IEEE-754 precision drift (`0.1 + 0.2 !== 0.3`).
+
+## Using with coding agents
+
+google-sheet-cli is built to be driven by coding agents: `workbook:*` and local `report:run` run with zero credentials and zero network calls, every command emits machine-readable output (`--rawOutput`/`-r`, `--csv`), and writes fail closed — formulas are never overwritten without an explicit `--overwriteFormulas`, and `--dryRun` previews any mutation with zero side effects.
+
+The repository ships an agent skill and an integration guide:
+
+- [`skill/SKILL.md`](skill/SKILL.md) — agent skill covering every command, flag and workflow (install: copy into `~/.omp/skills/google-sheet/` or `~/.claude/skills/google-sheet/`).
+- [docs/agents.md](docs/agents.md) — rules for agents: credentials via env/file never inline, the read → `--dryRun` → write safety ladder, offline-first workflow, exact-decimal report semantics.
 
 <!-- commands -->
 # Command Topics
