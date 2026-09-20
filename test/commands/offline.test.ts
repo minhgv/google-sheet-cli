@@ -338,6 +338,58 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     ],
   },
   {
+    id: 'data:schema',
+    usage: '$ google-sheet data:schema -t <value> -s <value> [-h] [-r] [-j]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--minRow=<value> [default: 1]',
+      '--minCol=<value> [default: 1]',
+      '--maxRow=<value> [default: 100]',
+      '--maxCol=<value> [default: 26]',
+    ],
+  },
+  {
+    id: 'data:validate',
+    usage: '$ google-sheet data:validate -t <value> -s <value> [--schema <value>] [--schemaFile <value>] [-h] [-r] [-j]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--schema=<value>',
+      '--schemaFile=<value>',
+      '--minRow=<value> [default: 1]',
+      '--maxRow=<value> [default: 100]',
+    ],
+  },
+  {
+    id: 'data:clear',
+    usage: '$ google-sheet data:clear -t <value> -s <value> --range <value> [-h] [-r] [-j]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--range=<value> (required) A1 range to clear',
+      '--dryRun',
+      '--overwriteFormulas',
+    ],
+  },
+  {
+    id: 'data:upsert',
+    usage: '$ google-sheet data:upsert [DATA] -t <value> -s <value> --key <value> [-h] [-r] [-j]',
+    expected: [
+      DATA_ARG,
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      VALUE_INPUT_OPTION_FLAG,
+      '--key=<value> (required) Header name of the single key column used to match input rows against existing rows',
+      '--range=<value>',
+      '-i, --input=<value>',
+      '--inputFormat=<option>',
+      '<options: json|csv>',
+      '--dryRun',
+      '--overwriteFormulas',
+    ],
+  },
+  {
     id: 'spreadsheet:add',
     usage: '$ google-sheet spreadsheet:add --spreadsheetTitle <value> [-h] [-r]',
     expected: ['--spreadsheetTitle=<value> (required) Title of the spreadsheet'],
@@ -597,6 +649,31 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     id: 'spreadsheet:unshare',
     usage: '$ google-sheet spreadsheet:unshare -s <value> [-h] [-r]',
     expected: [SPREADSHEET_ID_FLAG, '--permissionId=<value>', '--email=<value>'],
+  },
+  {
+    id: 'spreadsheet:copy',
+    usage: '$ google-sheet spreadsheet:copy -s <value> [--title <value>] [-h] [-r] [-j]',
+    expected: [SPREADSHEET_ID_FLAG, '--title=<value>'],
+  },
+  {
+    id: 'spreadsheet:export',
+    usage: '$ google-sheet spreadsheet:export -s <value> --format pdf|xlsx -o <value> [-h] [-r] [-j]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      '--format=<option> (required) Export format',
+      '<options: pdf|xlsx>',
+      '-o, --output=<value> (required) Path of the local file to write',
+      '--overwrite',
+    ],
+  },
+  {
+    id: 'worksheet:copy',
+    usage: '$ google-sheet worksheet:copy -t <value> -s <value> --destinationSpreadsheetId <value> [-h] [-r] [-j]',
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--destinationSpreadsheetId=<value> (required) ID of the spreadsheet to copy the worksheet into',
+    ],
   },
 ];
 

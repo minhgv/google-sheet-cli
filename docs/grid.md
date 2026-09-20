@@ -15,11 +15,13 @@ Delete rows or columns from a worksheet. Data after the deleted range shifts up/
 
 ```
 USAGE
-  $ google-sheet grid:delete -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-c
+  $ google-sheet grid:delete -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-j] [-c
     <value>] [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>] [--count <value>] [--dryRun]
 
 FLAGS
   -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
@@ -59,11 +61,13 @@ Freeze or unfreeze rows and columns on a worksheet. At least one of --rows/--col
 
 ```
 USAGE
-  $ google-sheet grid:freeze -s <value> -t <value> [-h] [-r] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [--rows <value>] [--columns <value>] [--dryRun]
+  $ google-sheet grid:freeze -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [--rows <value>] [--columns <value>] [--dryRun]
 
 FLAGS
   -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
@@ -103,11 +107,13 @@ Hide or unhide rows or columns on a worksheet.
 
 ```
 USAGE
-  $ google-sheet grid:hide -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-c
+  $ google-sheet grid:hide -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-j] [-c
     <value>] [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>] [--count <value>] [--dryRun] [--unhide]
 
 FLAGS
   -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
@@ -147,12 +153,14 @@ Insert rows or columns into a worksheet at a position. Existing data at and afte
 
 ```
 USAGE
-  $ google-sheet grid:insert -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-c
+  $ google-sheet grid:insert -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-j] [-c
     <value>] [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>] [--count <value>] [--dryRun]
     [--inheritFromBefore]
 
 FLAGS
   -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
@@ -193,12 +201,14 @@ Resize rows or columns to an explicit pixel size, or auto-size them to their con
 
 ```
 USAGE
-  $ google-sheet grid:resize -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-c
+  $ google-sheet grid:resize -s <value> -t <value> --dimension ROWS|COLUMNS --start <value> [-h] [-r] [-j] [-c
     <value>] [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>] [--count <value>] [--dryRun] [--pixels
     <value> | --auto]
 
 FLAGS
   -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use

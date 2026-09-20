@@ -27,14 +27,16 @@ export class ReportSchemaError extends Error {
 }
 
 /**
- * Normalizes and validates tabular data against a TableSchema.
- * Data can be an array of records (Record<string, unknown>[]) or a 2D matrix (unknown[][]).
+ * Normalizes and validates tabular data against a TableSchema, collecting every per-row
+ * problem instead of throwing. Data can be an array of records (Record<string, unknown>[])
+ * or a 2D matrix (unknown[][]). Only structural failures (malformed schema, non-array
+ * input) throw: no per-row result would be meaningful for them.
  */
-export function normalizeTable(
+export function normalizeTableWithErrors(
   data: unknown,
   schema: TableSchema,
   tableName?: string
-): Record<string, unknown>[] {
+): { rows: Record<string, unknown>[]; errors: ValidationError[] } {
   if (!schema || !Array.isArray(schema.fields)) {
     throw new Error('Invalid TableSchema: schema.fields must be an array of FieldSchema');
   }
@@ -55,7 +57,7 @@ export function normalizeTable(
   }
 
   if (data.length === 0) {
-    return [];
+    return { rows: [], errors: [] };
   }
 
   const errors: ValidationError[] = [];
@@ -180,11 +182,23 @@ export function normalizeTable(
     normalizedRows.push(normalizedRow);
   }
 
+  return { rows: normalizedRows, errors };
+}
+
+/**
+ * Same normalization, with a non-empty collected problem list raised as one
+ * ReportSchemaError carrying every problem.
+ */
+export function normalizeTable(
+  data: unknown,
+  schema: TableSchema,
+  tableName?: string
+): Record<string, unknown>[] {
+  const { rows, errors } = normalizeTableWithErrors(data, schema, tableName);
   if (errors.length > 0) {
     throw new ReportSchemaError(errors, tableName);
   }
-
-  return normalizedRows;
+  return rows;
 }
 
 /**

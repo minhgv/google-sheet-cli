@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import { GoogleSheetCli } from './google-sheet';
 import { parseInput, parseJsonSafely, readInput } from './report/input';
+import { ValidationError } from './validation-error';
 
 export interface CommandInputOptions {
   dataArg?: string;
@@ -18,16 +19,16 @@ export async function resolveDataMatrix(
   inputFormat?: string
 ): Promise<GoogleSheetCli.RawData> {
   if (dataArg !== undefined && dataArg !== '' && inputFile !== undefined && inputFile !== '') {
-    throw new Error('Mutually exclusive input sources: specify either positional data argument or --input flag, not both');
+    throw new ValidationError('Mutually exclusive input sources: specify either positional data argument or --input flag, not both');
   }
 
   if ((dataArg === undefined || dataArg === '') && (inputFile === undefined || inputFile === '')) {
-    throw new Error('No data provided. Specify either positional data argument or --input flag (pipe data in via --input=-)');
+    throw new ValidationError('No data provided. Specify either positional data argument or --input flag (pipe data in via --input=-)');
   }
 
   const format = inputFormat ? (inputFormat.toLowerCase() as 'json' | 'csv') : undefined;
   if (format && format !== 'json' && format !== 'csv') {
-    throw new Error(`Unsupported input format "${inputFormat}"; expected "json" or "csv"`);
+    throw new ValidationError(`Unsupported input format "${inputFormat}"; expected "json" or "csv"`);
   }
 
   let rawParsed: unknown;
@@ -47,7 +48,7 @@ export async function resolveDataMatrix(
           }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          throw new Error(`"data" input has to be valid JSON (${msg})`);
+          throw new ValidationError(`"data" input has to be valid JSON (${msg})`);
         }
       }
     }
@@ -60,10 +61,10 @@ export async function resolveDataMatrix(
       rawParsed = parseInput(content, detectedFormat, { matrix: true });
     } else {
       const stat = await fs.promises.stat(inputFile).catch((err) => {
-        throw new Error(`Cannot read input file "${inputFile}": ${err.message}`);
+        throw new ValidationError(`Cannot read input file "${inputFile}": ${err.message}`);
       });
       if (stat.size > 20 * 1024 * 1024) {
-        throw new Error(`Input file size (${stat.size} bytes) exceeds maximum limit of 20MB`);
+        throw new ValidationError(`Input file size (${stat.size} bytes) exceeds maximum limit of 20MB`);
       }
       const content = await fs.promises.readFile(inputFile, 'utf8');
       let detectedFormat = format;
@@ -88,14 +89,14 @@ export async function resolveDataMatrix(
  */
 export function validate2DMatrix(val: unknown): GoogleSheetCli.RawData {
   if (!Array.isArray(val)) {
-    throw new Error('Data input must be a 2D array: (string | number | boolean | null)[][]');
+    throw new ValidationError('Data input must be a 2D array: (string | number | boolean | null)[][]');
   }
 
   const result: GoogleSheetCli.RawData = [];
   for (let r = 0; r < val.length; r++) {
     const row = val[r];
     if (!Array.isArray(row)) {
-      throw new Error(`Row at index ${r} must be an array, but received ${typeof row}`);
+      throw new ValidationError(`Row at index ${r} must be an array, but received ${typeof row}`);
     }
     const validatedRow: (string | number | boolean | null)[] = [];
     for (let c = 0; c < row.length; c++) {
@@ -105,7 +106,7 @@ export function validate2DMatrix(val: unknown): GoogleSheetCli.RawData {
       } else if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') {
         validatedRow.push(cell);
       } else {
-        throw new Error(
+        throw new ValidationError(
           `Cell at row ${r}, column ${c} must be a string, number, boolean, or null; received ${typeof cell}`
         );
       }
@@ -126,11 +127,11 @@ export async function resolveBatchUpdates(
   inputFormat?: string
 ): Promise<{ range: string; values: GoogleSheetCli.RawData }[]> {
   if (dataArg !== undefined && dataArg !== '' && inputFile !== undefined && inputFile !== '') {
-    throw new Error('Mutually exclusive input sources: specify either positional data argument or --input flag, not both');
+    throw new ValidationError('Mutually exclusive input sources: specify either positional data argument or --input flag, not both');
   }
 
   if ((dataArg === undefined || dataArg === '') && (inputFile === undefined || inputFile === '')) {
-    throw new Error('No data provided. Specify either positional data argument or --input flag (pipe data in via --input=-)');
+    throw new ValidationError('No data provided. Specify either positional data argument or --input flag (pipe data in via --input=-)');
   }
 
   let rawParsed: unknown;
@@ -145,7 +146,7 @@ export async function resolveBatchUpdates(
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`"data" input has to be valid JSON (${msg})`);
+        throw new ValidationError(`"data" input has to be valid JSON (${msg})`);
       }
     }
     rawParsed = parsed;
@@ -160,11 +161,11 @@ export async function resolveBatchUpdates(
   }
 
   if (!Array.isArray(rawParsed)) {
-    throw new Error('Batch update data must be an array of { range: string, values: any[][] } objects');
+    throw new ValidationError('Batch update data must be an array of { range: string, values: any[][] } objects');
   }
 
   if (rawParsed.length === 0) {
-    throw new Error('Batch update data array cannot be empty');
+    throw new ValidationError('Batch update data array cannot be empty');
   }
 
   const updates: { range: string; values: GoogleSheetCli.RawData }[] = [];
@@ -172,16 +173,16 @@ export async function resolveBatchUpdates(
   for (let i = 0; i < rawParsed.length; i++) {
     const item = rawParsed[i];
     if (!item || typeof item !== 'object') {
-      throw new Error(`Batch update item at index ${i} must be an object with "range" and "values" properties`);
+      throw new ValidationError(`Batch update item at index ${i} must be an object with "range" and "values" properties`);
     }
 
     const { range, values } = item as { range?: unknown; values?: unknown };
     if (!range || typeof range !== 'string' || !range.trim()) {
-      throw new Error(`Batch update item at index ${i} is missing a valid "range" string`);
+      throw new ValidationError(`Batch update item at index ${i} is missing a valid "range" string`);
     }
 
     if (!Array.isArray(values)) {
-      throw new Error(`Batch update item at index ${i} ("${range}") must contain a 2D "values" array`);
+      throw new ValidationError(`Batch update item at index ${i} ("${range}") must contain a 2D "values" array`);
     }
 
     const validatedMatrix = validate2DMatrix(values);
@@ -199,7 +200,7 @@ export async function resolveBatchUpdates(
  */
 export function parseRangesFlag(rangesFlag?: string): string[] {
   if (!rangesFlag || typeof rangesFlag !== 'string' || !rangesFlag.trim()) {
-    throw new Error('The --ranges flag is required and must be a non-empty JSON array of A1 range strings');
+    throw new ValidationError('The --ranges flag is required and must be a non-empty JSON array of A1 range strings');
   }
 
   const trimmed = rangesFlag.trim();
@@ -208,22 +209,22 @@ export function parseRangesFlag(rangesFlag?: string): string[] {
     parsed = parseJsonSafely(trimmed);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to parse --ranges flag: input must be a valid JSON array of range strings (${msg})`);
+    throw new ValidationError(`Failed to parse --ranges flag: input must be a valid JSON array of range strings (${msg})`);
   }
 
   if (!Array.isArray(parsed)) {
-    throw new Error('The --ranges flag must be a JSON array of A1 range strings (e.g. \'["Sheet1!A1:B10", "Sheet2!C1:D5"]\')');
+    throw new ValidationError('The --ranges flag must be a JSON array of A1 range strings (e.g. \'["Sheet1!A1:B10", "Sheet2!C1:D5"]\')');
   }
 
   if (parsed.length === 0) {
-    throw new Error('The --ranges flag array cannot be empty');
+    throw new ValidationError('The --ranges flag array cannot be empty');
   }
 
   const ranges: string[] = [];
   for (let i = 0; i < parsed.length; i++) {
     const r = parsed[i];
     if (typeof r !== 'string' || !r.trim()) {
-      throw new Error(`Range at index ${i} must be a non-empty string`);
+      throw new ValidationError(`Range at index ${i} must be a non-empty string`);
     }
     ranges.push(r.trim());
   }

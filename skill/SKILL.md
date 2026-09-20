@@ -1,6 +1,6 @@
 ---
 name: google-sheet
-description: Read, write, and manage Google Sheets AND local Excel (.xlsx) files from the terminal using the google-sheet-cli oclif CLI. Supports OAuth 2.0 user auth and Service Account JWT for cloud, plus fully-offline XLSX inspect/read/write, declarative report automation (finance cash-flow, manpower estimation) from templates, cell formatting (borders, bold, colors, number formats, merge), and cell search returning A1 coordinates. Use when the user asks to read/update a Google Sheet, batch-read ranges, append table rows, create spreadsheets, work with a docs.google.com/spreadsheets URL, inspect or edit a local .xlsx, generate a report from CSV/JSON via a template, find a cell/row by value, or format a sheet for a pretty report. Trigger on "đọc sheet", "google sheet", "spreadsheet", "xlsx", "excel", "report", "báo cáo", "data:get", "data:find", "format:cells", "gsheet", or a Google Sheets URL.
+description: Read, write, and manage Google Sheets AND local Excel (.xlsx) files from the terminal using the google-sheet-cli oclif CLI. Supports OAuth 2.0 user auth and Service Account JWT for cloud, plus fully-offline XLSX inspect/read/write, declarative report automation (finance cash-flow, manpower estimation) from templates, cell formatting (borders, bold, colors, number formats, merge), and cell search returning A1 coordinates. Use when the user asks to read/update a Google Sheet, batch-read ranges, append table rows, create spreadsheets, work with a docs.google.com/spreadsheets URL, inspect or edit a local .xlsx, generate a report from CSV/JSON via a template, find a cell/row by value, or format a sheet for a pretty report, upsert rows keyed by a column, discover or validate a sheet's schema, duplicate a spreadsheet or worksheet, or export a spreadsheet to PDF/XLSX. Trigger on "đọc sheet", "google sheet", "spreadsheet", "xlsx", "excel", "report", "báo cáo", "data:get", "data:find", "data:upsert", "data:validate", "format:cells", "gsheet", "spreadsheet:export", or a Google Sheets URL.
 ---
 
 # google-sheet-cli
@@ -44,6 +44,17 @@ data:batch-update -s <id> -i <file|-> [--valueInputOption] [--dryRun] [--overwri
 data:find         -s <id> -t <title> (--equals|--contains|--regex <v>) [--range A1:Z100]
                   [--column B | --header "Status"] [--ignoreCase|--no-ignoreCase]
                   [--limit N|--first] [--byRow] [render options] → A1 coordinates JSON
+data:schema       -s <id> -t <title> [--minRow 1 --minCol 1 --maxRow 100 --maxCol 26]
+                  [table flags]   read-only schema discovery; first sampled row is the header
+data:validate     -s <id> -t <title> (--schema '<TableSchema JSON>'|--schemaFile <path|->)
+                  [--minRow --minCol --maxRow --maxCol]   read-only; exit 1 on violations
+data:clear        -s <id> -t <title> --range 'Sheet1!A2:D20' [--dryRun] [--overwriteFormulas]
+                  values-only clear of a bounded range; formulas refuse without --overwriteFormulas
+data:upsert       -s <id> -t <title> --key <column> (-d '<json rows>'|-i <file|->) [--inputFormat json|csv]
+                  [--range 'Sheet1!A1:F100'] [--valueInputOption] [--dryRun] [--overwriteFormulas]
+spreadsheet:copy  -s <id> [--title <name>]   Drive copy; source untouched; sharing NOT cloned
+spreadsheet:export -s <id> --format pdf|xlsx -o <file> [--overwrite]   atomic write; Drive 10 MB cap
+worksheet:copy    -s <id> -t <title> --destinationSpreadsheetId <destId>   server assigns title on collision
 format:cells      -s <id> -t <title> --range A1:J1 [--bold --italic --underline --strikethrough]
                   [--fontSize --fontFamily --textColor #RRGGBB --backgroundColor #RRGGBB]
                   [--horizontalAlignment LEFT|CENTER|RIGHT] [--verticalAlignment TOP|MIDDLE|BOTTOM]
@@ -87,6 +98,12 @@ report:run --template <template.json> \
 - Writes are formula-safe by default: existing formula cells are NOT overwritten without explicit `--overwriteFormulas`; batch/update writes support `--dryRun` preview with zero side effects.
 - `spreadsheet:share|permissions|unshare` use the Drive API (`drive.file` scope). OAuth tokens issued before that scope was added must re-run `auth:login`. Under `drive.file` only files this app created or has opened are shareable — a pre-existing sheet may need one `spreadsheet:get` through this app first. `--notify` defaults OFF.
 - `data:find` returns `{matchCount, truncated, matches:[{a1,row,column,columnLetter,value,rowValues?}]}`. Use it to locate a row/cell before a targeted `data:update`. `--header "Name"` resolves a column by its header text (first scanned row); `--byRow` returns full row values. Zero matches → `matchCount:0`, exit 0.
+- Structured errors for agents: any command with `--json`/`-j` prints ONE failure envelope on stderr and exits 1 — `{"error":{"code":"NOT_FOUND","message":"...","retryable":false,"retryAfterMs"?,"issues"?}}` — success output unchanged. `--rawOutput`/`-r` gives JSON success AND failure. Codes: `USAGE` `AUTH_REQUIRED` `UNAUTHORIZED` `FORBIDDEN` `NOT_FOUND` `CONFLICT` `RATE_LIMITED` `UPSTREAM` `NETWORK` (the retryable set) `REQUEST_INVALID` `VALIDATION` `SCHEMA_INVALID` `DATA_INVALID` `INTERNAL`. `issues` carry `{row, column, a1, field, code, message, value}` for `data:validate` violations and upsert rejections. Retry only `retryable:true` codes; never replay an ambiguous write blindly.
+- `data:schema` samples rows 1-100 x columns A-Z by default (`--minRow/--minCol/--maxRow/--maxCol`; first sampled row is the header) and reports header A1 cells, inferred types with counts, formula-cell counts, data-validation rules and named ranges. Types are sample evidence — Google stores dates as numbers — not an authoritative schema.
+- `data:validate` takes the report TableSchema shape (`{"fields":[{"name":"Name","type":"string","required":true}]}`; types `string|number|integer|decimal|boolean|date` plus `required/min/max/enum/unique`). Violations arrive with exact row/A1 coordinates and error code `DATA_INVALID`; a malformed schema fails with `SCHEMA_INVALID`. Both commands are strictly read-only.
+- `data:upsert` is single-writer, keyed by one `--key` column with typed matching (string `"001"` never matches number `1`; leading zeros kept). Header-first input; omitted columns and formulas are preserved; writes are `RAW` by default; it refuses when a bounded `--range` hides trailing table data; `--dryRun` previews added/updated/unchanged rows plus planned ranges. No transaction, no automatic retry, no concurrent writers.
+- `spreadsheet:copy` / `worksheet:copy` never touch the source; sharing grants are NOT duplicated (the clone is private to this app); on a title collision `worksheet:copy` reports the server-assigned title and the new sheet id.
+- `spreadsheet:export` writes PDF/XLSX atomically (temp file + rename), refuses to clobber an existing file without `--overwrite`, and is capped at 10 MB by Drive; authorization stays in the `drive.file` scope (files this app created or opened), never full Drive.
 - `format:cells`/`format:merge` only touch `userEnteredFormat` — values and formulas are never overwritten. `--dryRun` prints the exact batchUpdate request bodies. For a pretty report: `format:cells --range A1:J1 --bold --backgroundColor "#1a73e8" --textColor "#ffffff"` then `format:cells --range A2:J50 --numberFormat "#,##0.00" --borders all`.
 - `grid:*` commands mutate structure, not values: `insert`/`delete` shift cells (delete `--dryRun` shows the values about to be lost), `hide`/`resize`/`freeze` are non-destructive. All are 1-based `--start`/`--count`; `--dryRun` prints the exact batchUpdate request.
 
@@ -115,6 +132,8 @@ Templates declare: schema fields (`string|number|integer|decimal|boolean|date` +
 Safety invariants: reports to Google Sheets/XLSX mark managed ranges and re-runs replace them cleanly (idempotent); string data starting with `=`,`+`,`-`,`@` is escaped (formula-injection guard); formula cache values from source workbooks are only consumed with explicit `--allowCachedFormulaValues` (nothing recalculates formulas).
 
 ## Errors
+
+Machine-readable mode: run any command with `--json`/`-j` (or `--rawOutput`/`-r`) → one JSON envelope on stderr, exit 1. React by `code`: `AUTH_REQUIRED`/`UNAUTHORIZED` → re-auth, `FORBIDDEN` → share the sheet, `RATE_LIMITED` → wait `retryAfterMs`, `USAGE`/`VALIDATION`/`SCHEMA_INVALID` → fix the invocation, `DATA_INVALID` → inspect `issues`, `NOT_FOUND` → wrong id/title.
 
 - `403 The caller does not have permission` → sheet not shared with the authenticated identity. Share it or login with the owning account.
 - `Sheet "X" not found` → wrong tab title; list via `spreadsheet:get --rawOutput`.

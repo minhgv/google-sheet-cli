@@ -140,7 +140,23 @@ export const refreshTokens = async (client: OAuth2Client): Promise<OAuthTokens> 
     saveTokens(newTokens);
     return newTokens;
   } catch (error) {
-    throw new Error(`Failed to refresh access token: ${(error as Error).message}`);
+    // Keep the transport evidence the refresh attempt produced (HTTP status, network code and
+    // the original error) as structural metadata on the wrapper: the CLI classifier reads
+    // `status`/`code` dependency-free, so a 403/429/network refresh failure keeps its own
+    // classification instead of reading like a local authentication problem. `cause` is
+    // defined non-enumerable exactly like the runtime's Error#cause, so spreads and JSON
+    // serialization never pick it up. The human message is unchanged. google-auth-library
+    // rejects with a GaxiosError whose message/code/response.status the `unknown` catch
+    // binding hides; the read shape is asserted once below, all fields optional unknown.
+    const source = error as { message?: unknown; status?: unknown; code?: unknown; response?: { status?: unknown } };
+    const wrapped: Error & { status?: number; code?: string } = new Error(`Failed to refresh access token: ${source.message}`);
+    const status = source.response?.status ?? source.status;
+    if (typeof status === 'number') wrapped.status = status;
+    if (typeof source.code === 'string') wrapped.code = source.code;
+    if (error !== undefined) {
+      Object.defineProperty(wrapped, 'cause', { value: error, configurable: true, writable: true });
+    }
+    throw wrapped;
   }
 };
 

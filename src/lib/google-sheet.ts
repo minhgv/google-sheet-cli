@@ -19,6 +19,7 @@ import {
   METADATA_KEY_REPORT_MANAGED,
   packUpdateBatches,
   parseA1Cell,
+  ParsedA1Range,
   parseStrictA1Range,
   SheetManagedMetadata,
   toGoogleExtendedValue,
@@ -26,6 +27,8 @@ import {
 } from './sheet-batch';
 import type { ReportCell, ReportDocument, ReportFormula, ReportNumberFormat, ReportSheet } from './report/types';
 import { buildFormatRequests, buildMergeRequest, FormatSpec } from './sheet-format';
+import { buildTableFrame, firstBelowBoundCell, parseUpsertInput, planUpsert } from './upsert-plan';
+import { ValidationError } from './validation-error';
 
 export namespace GoogleSheetCli {
   export interface Credentials {
@@ -111,6 +114,58 @@ export namespace GoogleSheetCli {
     dryRun: boolean;
     changes?: BatchUpdateChange[];
     batchesExecuted: number;
+  }
+
+  export interface ClearOptions {
+    /** A1 range to clear; must be explicitly bounded on both axes, e.g. "Sheet1!A1:D20" */
+    range: string;
+    worksheetTitle?: string | null;
+    dryRun?: boolean;
+    overwriteFormulas?: boolean;
+  }
+
+  export interface ClearReceipt {
+    spreadsheetId: string;
+    worksheetTitle: string;
+    /** the canonical bounded range that was, or on dryRun would be, cleared */
+    range: string;
+    rowsCleared: number;
+    columnsCleared: number;
+    cellsCleared: number;
+    dryRun: boolean;
+    batchesExecuted: number;
+    /** dryRun only: formulas the clear would overwrite */
+    formulasOverwritten?: string[];
+  }
+
+  export interface UpsertOptions {
+    /** header name of the single key column used to match input rows against existing rows */
+    key: string;
+    /** A1 range of the existing table including its header row; defaults to the whole worksheet grid */
+    range?: string;
+    worksheetTitle?: string | null;
+    dryRun?: boolean;
+    overwriteFormulas?: boolean;
+    /** defaults to RAW so values land exactly as given ('001' stays text) */
+    valueInputOption?: ValueInputOption;
+  }
+
+  export interface UpsertReceipt {
+    spreadsheetId: string;
+    worksheetTitle: string;
+    keyColumn: string;
+    existingRows: number;
+    rowsAdded: number;
+    rowsUpdated: number;
+    rowsUnchanged: number;
+    addedRanges: string[];
+    updatedRanges: string[];
+    /** every range this run planned to write, in execution order */
+    plannedRanges: string[];
+    dryRun: boolean;
+    batchesExecuted: number;
+    /** dryRun only: formulas the planned writes would overwrite */
+    formulasOverwritten?: string[];
   }
 
   export interface AppendTableOptions {
@@ -293,6 +348,75 @@ export namespace GoogleSheetCli {
     /** resolve the permission id by grantee email */
     email?: string;
   }
+
+  export interface WorksheetMetadataOptions {
+    worksheetTitle?: string | null;
+    /** optional bounded A1 range WITHOUT a worksheet title (e.g. "A1:Z100"); the title is prepended */
+    range?: string;
+  }
+
+  export interface WorksheetMetadata {
+    spreadsheetId: string;
+    worksheetTitle: string;
+    properties: sheets_v4.Schema$SheetProperties;
+    /** grid data for the requested range; each entry's startRow/startColumn are 0-based */
+    gridData: sheets_v4.Schema$GridData[];
+    /** named ranges scoped to this worksheet */
+    namedRanges: sheets_v4.Schema$NamedRange[];
+  }
+
+  export interface CopySpreadsheetOptions {
+    /** title of the new spreadsheet; Drive names the copy after the source when omitted */
+    title?: string;
+  }
+
+  /** The subset of the Drive File resource a copy reports. */
+  export interface DriveFileMetadata {
+    id?: string | null;
+    name?: string | null;
+    mimeType?: string | null;
+    webViewLink?: string | null;
+  }
+
+  export interface CopySpreadsheetResult {
+    /** the spreadsheet that was copied; it is left untouched */
+    sourceSpreadsheetId: string;
+    /** the copy's file id; pass it as --spreadsheetId to every other command */
+    spreadsheetId: string;
+    title: string;
+    mimeType: string;
+    webViewLink?: string;
+  }
+
+  export interface CopyWorksheetOptions {
+    worksheetTitle: string;
+    /** copyTo never guesses the destination; it has to be named explicitly */
+    destinationSpreadsheetId: string;
+  }
+
+  export interface CopyWorksheetResult {
+    spreadsheetId: string;
+    worksheetTitle: string;
+    destinationSpreadsheetId: string;
+    /** the new sheet's id inside the destination spreadsheet */
+    sheetId: number;
+    /** the title the copy carries in the destination; copyTo keeps the source title */
+    title: string;
+    /** the copy's position in the destination; present when the API reports it */
+    index?: number;
+  }
+
+  export interface ExportOptions {
+    format: 'pdf' | 'xlsx';
+  }
+
+  export interface ExportResult {
+    spreadsheetId: string;
+    mimeType: string;
+    /** raw export bytes: write them to disk, never log or JSON-encode them */
+    bytes: Buffer;
+    byteLength: number;
+  }
 }
 
 // The Sheets API scope. 2.x asked for the retired Sheets v3 feed scope, which Google still
@@ -307,6 +431,13 @@ const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
+
+// Drive files.export serves several formats; the CLI offers exactly these two, and test/fake-sheets.ts
+// mirrors the map. Keys are CLI formats, values the MIME types Drive expects on the query string.
+const EXPORT_MIME_TYPES: Record<'pdf' | 'xlsx', string> = {
+  pdf: 'application/pdf',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
 
 const LOG_NAMESPACE = 'gsheet:sheets';
 
@@ -371,9 +502,10 @@ const RETRY_CONFIG = {
 export default class GoogleSheet {
   private sheets!: sheets_v4.Sheets;
 
-  // Kept for raw Drive API calls (permissions). Structural type: both auth.JWT and
-  // OAuth2Client satisfy it, and it sidesteps the v10/v11 dual-package mismatch.
-  private authClient?: { request<T = unknown>(opts: { url: string; method?: string; params?: Record<string, unknown>; data?: unknown }): Promise<{ data: T }> };
+  // Kept for raw Drive API calls (permissions, file copy/export). Structural type: both auth.JWT and
+  // OAuth2Client satisfy it, and it sidesteps the v10/v11 dual-package mismatch. responseType is
+  // what keeps files.export binary-safe instead of decoded into a string.
+  private authClient?: { request<T = unknown>(opts: { url: string; method?: string; params?: Record<string, unknown>; data?: unknown; responseType?: 'arraybuffer' | 'blob' | 'json' | 'text' | 'stream' | 'unknown' }): Promise<{ data: T }> };
 
   /**
    * Creates an instance of GoogleSheet.
@@ -448,6 +580,56 @@ export default class GoogleSheet {
 
     this.worksheetTitle = sheet?.properties?.title;
     return sheet;
+  }
+
+  /**
+   * Fetch scoped worksheet metadata: the worksheet's properties, bounded grid data carrying
+   * per-cell user-entered values, effective values, formatted values and data validation, and
+   * the spreadsheet's named ranges for this sheet - in a single `spreadsheets.get` request
+   * limited to the requested worksheet and (optionally) range.
+   *
+   * `getSpreadsheet()` deliberately does not return grid data; callers needing cell-level
+   * formula or validation detail must go through here and should bound the request with
+   * `range` (e.g. "A1:Z100") so a large sheet cannot blow up the response.
+   *
+   * @param {GoogleSheetCli.WorksheetMetadataOptions} [options={}]
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.WorksheetMetadata>}
+   * @memberof GoogleSheet
+   */
+  async getWorksheetMetadata(options: GoogleSheetCli.WorksheetMetadataOptions = {}, spreadsheetId?: string): Promise<GoogleSheetCli.WorksheetMetadata> {
+    const title = options.worksheetTitle ?? this.worksheetTitle;
+    if (!title) throw new Error('Option property "worksheetTitle" is required');
+    const id = spreadsheetId || this.spreadsheetId;
+    if (!id) throw new Error('Option property "spreadsheetId" is required');
+    if (options.range && options.range.includes('!')) {
+      throw new Error(`Range "${options.range}" must be plain A1 notation; the worksheet title is prepended automatically`);
+    }
+
+    const escaped = escapeWorksheetTitle(title);
+    const requestedRange = options.range ? `${escaped}!${options.range}` : escaped;
+    const response = await this.sheets.spreadsheets.get({
+      spreadsheetId: id,
+      ranges: [requestedRange],
+      // Scoped field mask: worksheet properties, the bounded grid values with formula and
+      // validation detail, and the spreadsheet-level named ranges. This is the only call in
+      // the class that returns grid data.
+      fields:
+        'sheets.properties(sheetId,title,index,gridProperties),sheets.data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue,formattedValue,dataValidation))),namedRanges',
+    });
+
+    const sheet = response.data.sheets?.find((entry) => entry.properties?.title === title) ?? response.data.sheets?.[0];
+    if (!sheet?.properties) throw new Error(`Worksheet "${title}" not found`);
+    const sheetId = sheet.properties.sheetId;
+    const namedRanges = (response.data.namedRanges ?? []).filter((namedRange) => namedRange.range?.sheetId === sheetId);
+
+    return {
+      spreadsheetId: id,
+      worksheetTitle: title,
+      properties: sheet.properties,
+      gridData: sheet.data ?? [],
+      namedRanges,
+    };
   }
 
   /**
@@ -981,6 +1163,300 @@ export default class GoogleSheet {
       dryRun: false,
       batchesExecuted,
     };
+  }
+
+  /**
+   * Clear cell values in an explicitly bounded range. Values-only: formatting, data
+   * validation and every other cell property stay untouched. Cells that contain formulas
+   * refuse to clear unless `overwriteFormulas` is set, and `dryRun` reports the plan without
+   * touching a single cell.
+   *
+   * @param {GoogleSheetCli.ClearOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.ClearReceipt>}
+   * @memberof GoogleSheet
+   */
+  async clearData(options: GoogleSheetCli.ClearOptions, spreadsheetId?: string): Promise<GoogleSheetCli.ClearReceipt> {
+    const targetSpreadsheetId = spreadsheetId || this.spreadsheetId || '';
+    if (!targetSpreadsheetId) throw new ValidationError('Option property "spreadsheetId" is required');
+    if (!options?.range || typeof options.range !== 'string') {
+      throw new ValidationError('clearData requires an explicit "range"');
+    }
+
+    const parsed = parseStrictA1Range(options.range);
+    // Whole columns, whole rows and bare worksheet names are refused: only a box with both
+    // corners spelled out can be cleared.
+    if (
+      parsed.startCol === undefined ||
+      parsed.startRow === undefined ||
+      parsed.endCol === undefined ||
+      parsed.endRow === undefined
+    ) {
+      throw new ValidationError(
+        `clearData requires an explicitly bounded A1 range with both corners (e.g. "Sheet1!A1:D20"), got "${options.range}"`
+      );
+    }
+
+    const { worksheetTitle } = this.resolveTargetWorksheet(options.range, options.worksheetTitle);
+
+    // A clear never grows the grid, so a range reaching past it would fail mid-write; check
+    // the bounds while there is still nothing to undo.
+    const sheet = await this.getWorksheet(worksheetTitle, targetSpreadsheetId);
+    const rowCount = sheet.properties?.gridProperties?.rowCount ?? 0;
+    const columnCount = sheet.properties?.gridProperties?.columnCount ?? 0;
+    if (parsed.endRow > rowCount || parsed.endCol > columnCount) {
+      throw new ValidationError(`Clear range "${options.range}" reaches past the worksheet grid (${rowCount}x${columnCount})`);
+    }
+
+    const rows = parsed.endRow - parsed.startRow + 1;
+    const columns = parsed.endCol - parsed.startCol + 1;
+    const range = formatBoundedA1Range(worksheetTitle, parsed.startCol, parsed.startRow, parsed.endCol, parsed.endRow);
+
+    // Formula guard: read the exact target once, rendered as formulas, so a formula is seen
+    // even when it evaluates to empty. The guard's input is one single-cell witness per
+    // formula cell - the clear conceptually writes '' everywhere, so every formula cell is a
+    // conflict - which keeps the guard O(formulas) instead of materializing the O(cells)
+    // empty matrix the write used to carry. A malformed read refuses the clear outright:
+    // without a verified look at the range, no cell in it may be wiped.
+    const shouldInspectFormulas = Boolean(options.dryRun) || !options.overwriteFormulas;
+    let conflicts: FormulaConflict[] = [];
+    if (shouldInspectFormulas) {
+      const [existing] = await this.getDataBatch(
+        [range],
+        { valueRenderOption: GoogleSheetCli.ValueRenderOption.FORMULA },
+        targetSpreadsheetId
+      );
+      if (existing?.values !== undefined && !Array.isArray(existing.values)) {
+        throw new ValidationError(
+          `Clear preflight read of "${range}" returned malformed data; refusing to clear a range it could not inspect for formulas`
+        );
+      }
+      const grid: GoogleSheetCli.RawData = existing?.values || [];
+      const witnesses: { range: string; values: GoogleSheetCli.RawData }[] = [];
+      for (let r = 0; r < grid.length; r++) {
+        const row = grid[r] || [];
+        for (let c = 0; c < row.length; c++) {
+          if (extractFormulaText(row[c])) {
+            witnesses.push({
+              range: formatBoundedA1Range(
+                worksheetTitle,
+                parsed.startCol + c,
+                parsed.startRow + r,
+                parsed.startCol + c,
+                parsed.startRow + r
+              ),
+              // The incoming clear value at that cell: an empty string.
+              values: [['']],
+            });
+          }
+        }
+      }
+      conflicts = findFormulaOverwrites(witnesses, [{ range, values: grid }]);
+    }
+
+    if (conflicts.length > 0 && !options.overwriteFormulas && !options.dryRun) {
+      const conflictDetails = conflicts
+        .slice(0, 5)
+        .map((c) => `${c.cell} (existing: "${c.existingFormula}", incoming: ${JSON.stringify(c.incomingValue)})`)
+        .join('; ');
+      throw new ValidationError(
+        `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflictDetails}`
+      );
+    }
+
+    // values.clear empties the values of the whole bounded range in one request while every
+    // other cell property stays untouched; no payload matrix is ever built or chunked.
+    if (!options.dryRun) {
+      await this.sheets.spreadsheets.values.clear({ spreadsheetId: targetSpreadsheetId, range });
+    }
+
+    return {
+      spreadsheetId: targetSpreadsheetId,
+      worksheetTitle,
+      range,
+      rowsCleared: rows,
+      columnsCleared: columns,
+      cellsCleared: rows * columns,
+      dryRun: Boolean(options.dryRun),
+      batchesExecuted: options.dryRun ? 0 : 1,
+      ...(options.dryRun
+        ? { formulasOverwritten: Array.from(new Set(conflicts.map((c) => `${c.cell}: ${c.existingFormula}`))) }
+        : {}),
+    };
+  }
+
+  /**
+   * Key-based upsert of header-mapped rows. A row whose key matches an existing row updates
+   * the cells the input supplies - and only those; a row with an unseen key appends below the
+   * table. Columns the input does not supply and cells outside the plan stay exactly as they
+   * are, formulas included. Keys are type-aware: the string "001" never matches the number 1.
+   *
+   * The whole plan is computed before the first write, and one updateDataBatch call carries
+   * every range, so its formula guard inspects the complete set up front and a conflict
+   * anywhere refuses everything before anything is sent. Payloads beyond the chunk boundary
+   * split into several requests; a failure part way through is thrown with the ranges already
+   * written and is never replayed automatically.
+   *
+   * @param {GoogleSheetCli.RawData} rows - header-first input matrix as produced by resolveDataMatrix
+   * @param {GoogleSheetCli.UpsertOptions} options
+   * @param {string} [spreadsheetId]
+   * @returns {Promise<GoogleSheetCli.UpsertReceipt>}
+   * @memberof GoogleSheet
+   */
+  async upsert(
+    rows: GoogleSheetCli.RawData,
+    options: GoogleSheetCli.UpsertOptions,
+    spreadsheetId?: string
+  ): Promise<GoogleSheetCli.UpsertReceipt> {
+    const targetSpreadsheetId = spreadsheetId || this.spreadsheetId || '';
+    if (!targetSpreadsheetId) throw new ValidationError('Option property "spreadsheetId" is required');
+    if (!options || typeof options.key !== 'string' || options.key === '') {
+      throw new ValidationError('upsert requires a "key" option naming exactly one existing header column');
+    }
+
+    const { parsed, worksheetTitle } = this.resolveTargetWorksheet(options.range, options.worksheetTitle);
+
+    // An empty input has nothing to place anywhere: a no-op receipt, no reads, no writes.
+    if (!Array.isArray(rows) || rows.length === 0 || (rows.length === 1 && (!rows[0] || rows[0].length === 0))) {
+      return {
+        spreadsheetId: targetSpreadsheetId,
+        worksheetTitle,
+        keyColumn: options.key,
+        existingRows: 0,
+        rowsAdded: 0,
+        rowsUpdated: 0,
+        rowsUnchanged: 0,
+        addedRanges: [],
+        updatedRanges: [],
+        plannedRanges: [],
+        dryRun: Boolean(options.dryRun),
+        batchesExecuted: 0,
+      };
+    }
+
+    const sheet = await this.getWorksheet(worksheetTitle, targetSpreadsheetId);
+    const rowCount = sheet.properties?.gridProperties?.rowCount ?? 0;
+    const columnCount = sheet.properties?.gridProperties?.columnCount ?? 0;
+    const startRow = parsed?.startRow || 1;
+    const startCol = parsed?.startCol || 1;
+    // Reads clamp to the grid exactly the way values.batchGet clamps server side.
+    const endRow = Math.min(parsed?.endRow || rowCount, rowCount);
+    const endCol = Math.min(parsed?.endCol || columnCount, columnCount);
+    if (startRow > rowCount || startCol > columnCount) {
+      throw new ValidationError(
+        `Upsert range "${options.range}" lies entirely outside the worksheet grid (${rowCount}x${columnCount})`
+      );
+    }
+
+    const tableRange = formatBoundedA1Range(worksheetTitle, startCol, startRow, endCol, endRow);
+    const [tableRead] = await this.getDataBatch(
+      [tableRange],
+      { valueRenderOption: GoogleSheetCli.ValueRenderOption.UNFORMATTED_VALUE },
+      targetSpreadsheetId
+    );
+
+    // Pure planning: every bad input, ambiguous table and duplicate key refuses here, before
+    // a single write is planned, let alone sent.
+    const frame = buildTableFrame(tableRead?.values, { worksheetTitle, startRow, startCol, keyColumn: options.key });
+    const input = parseUpsertInput(rows, frame, options.key);
+    const plan = planUpsert(frame, input);
+
+    // Below-bound preflight: a bounded read cannot see rows under its end row, so an append
+    // there could overwrite unseen data, and a matching key farther below would go unseen as
+    // a duplicate. Scan the table columns from just past the bound to the grid bottom,
+    // rendered as formulas so even a formula evaluating to empty is caught, and refuse the
+    // whole upsert - matched-row updates included - before anything is written. A range
+    // ending at the grid bottom, bounded or not, has nothing unseen below it and skips this.
+    if (endRow < rowCount) {
+      const belowRange = formatBoundedA1Range(worksheetTitle, startCol, endRow + 1, endCol, rowCount);
+      const [belowRead] = await this.getDataBatch(
+        [belowRange],
+        { valueRenderOption: GoogleSheetCli.ValueRenderOption.FORMULA },
+        targetSpreadsheetId
+      );
+      if (belowRead?.values !== undefined && !Array.isArray(belowRead.values)) {
+        throw new ValidationError(
+          `Upsert preflight read of "${belowRange}" returned malformed data; refusing to upsert without a verified look below row ${endRow}`
+        );
+      }
+      const belowCell = firstBelowBoundCell(belowRead?.values, { startRow: endRow + 1, startCol });
+      if (belowCell) {
+        // The refusal names the offending cell's address, the bound and the remedy - never
+        // the cell's value, so error text does not disclose spreadsheet contents.
+        throw new ValidationError(
+          `Upsert refused: range "${options.range}" stops at row ${endRow} but "${worksheetTitle}" holds content below it, ` +
+            `first at ${belowCell} inside the table columns. An appended row could overwrite that data, ` +
+            'and a matching key farther below would be invisible to key matching, so nothing was written. ' +
+            `Pass a range covering the whole table through row ${rowCount}, or remove the content below row ${endRow} first.`
+        );
+      }
+    }
+
+    const base = {
+      spreadsheetId: targetSpreadsheetId,
+      worksheetTitle,
+      keyColumn: options.key,
+      existingRows: frame.rows.length,
+      rowsAdded: plan.addedRows,
+      rowsUpdated: plan.updatedRows,
+      rowsUnchanged: plan.unchangedRows,
+      addedRanges: plan.addedRanges,
+      updatedRanges: plan.updatedRanges,
+      plannedRanges: plan.plannedRanges,
+      dryRun: Boolean(options.dryRun),
+    };
+
+    if (plan.updates.length === 0) {
+      return { ...base, batchesExecuted: 0 };
+    }
+
+    // One call carries the whole plan so the formula guard inside updateDataBatch inspects
+    // every target before the first write; a conflict anywhere refuses everything.
+    const receipt = await this.updateDataBatch(
+      plan.updates,
+      {
+        dryRun: options.dryRun,
+        overwriteFormulas: options.overwriteFormulas,
+        valueInputOption: options.valueInputOption || GoogleSheetCli.ValueInputOption.RAW,
+      },
+      targetSpreadsheetId
+    );
+
+    return {
+      ...base,
+      dryRun: receipt.dryRun,
+      batchesExecuted: receipt.batchesExecuted,
+      ...(options.dryRun
+        ? {
+            formulasOverwritten: Array.from(
+              new Set((receipt.changes || []).flatMap((change) => change.formulasOverwritten || []))
+            ),
+          }
+        : {}),
+    };
+  }
+
+  /**
+   * Resolve the worksheet a range-carrying operation targets and refuse a range whose
+   * worksheet name contradicts the worksheetTitle flag.
+   */
+  private resolveTargetWorksheet(
+    range: string | undefined,
+    worksheetTitleFlag: string | null | undefined
+  ): { parsed?: ParsedA1Range; worksheetTitle: string } {
+    const flagTitle = worksheetTitleFlag || this.worksheetTitle || '';
+    let parsed: ParsedA1Range | undefined;
+    if (range !== undefined && range !== '') {
+      parsed = parseStrictA1Range(range);
+      if (parsed.worksheetTitle && flagTitle && parsed.worksheetTitle !== flagTitle) {
+        throw new Error(
+          `Conflicting worksheet: range "${range}" names "${parsed.worksheetTitle}" but worksheetTitle is "${flagTitle}"`
+        );
+      }
+    }
+    const worksheetTitle = parsed?.worksheetTitle || flagTitle;
+    if (!worksheetTitle) throw new Error('Option property "worksheetTitle" is required');
+    return { parsed, worksheetTitle };
   }
 
   /**
@@ -2068,10 +2544,133 @@ export default class GoogleSheet {
   }
 
   /**
+   * Copy a whole spreadsheet into a new one through the Drive API files.copy endpoint.
+   * Requires the drive.file scope: only files this app created or has opened are visible.
+   * The source is left untouched and sharing grants are not duplicated; a POST that fails
+   * ambiguously is never replayed, because a copy that actually went through twice would
+   * leave two spreadsheets behind.
+   *
+   * @param {GoogleSheetCli.CopySpreadsheetOptions} [options={}] - new title; Drive keeps the source title when omitted
+   * @param {string} [spreadsheetId] - the spreadsheet to copy; defaults to the instance id
+   * @returns {Promise<GoogleSheetCli.CopySpreadsheetResult>} identifiers and metadata of the copy Drive actually created
+   * @memberof GoogleSheet
+   */
+  async copySpreadsheet(options: GoogleSheetCli.CopySpreadsheetOptions = {}, spreadsheetId?: string): Promise<GoogleSheetCli.CopySpreadsheetResult> {
+    const fileId = spreadsheetId || this.spreadsheetId;
+    if (!fileId) throw new Error('Option property "spreadsheetId" is required');
+    if (options.title !== undefined && (typeof options.title !== 'string' || !options.title.trim())) {
+      throw new Error('copySpreadsheet requires a non-empty "title" when one is provided');
+    }
+
+    // No request body when no title is asked for: Drive then names the copy after the source.
+    const file = await this.driveRequest<GoogleSheetCli.DriveFileMetadata>({
+      method: 'POST',
+      url: `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/copy`,
+      params: { fields: 'id,name,mimeType,webViewLink' },
+      ...(options.title !== undefined ? { data: { name: options.title } } : {}),
+    });
+    if (!file?.id) throw new Error(`Drive API returned no id for the copy of "${fileId}"`);
+
+    return {
+      sourceSpreadsheetId: fileId,
+      spreadsheetId: file.id,
+      title: file.name || '',
+      mimeType: file.mimeType || '',
+      ...(file.webViewLink ? { webViewLink: file.webViewLink } : {}),
+    };
+  }
+
+  /**
+   * Copy one worksheet into an explicit destination spreadsheet through Sheets
+   * spreadsheets.sheets.copyTo. The copy carries the source title; when the destination —
+   * the same spreadsheet included — already uses it, Google assigns a unique
+   * "<title> Copy" title and the receipt reports the title the server actually chose.
+   * Values and formulas are carried over; the source worksheet is left untouched.
+   *
+   * @param {GoogleSheetCli.CopyWorksheetOptions} options - source worksheet title and the destination spreadsheet id
+   * @param {string} [spreadsheetId] - the source spreadsheet; defaults to the instance id
+   * @returns {Promise<GoogleSheetCli.CopyWorksheetResult>} the SheetProperties the destination reports for the copy
+   * @memberof GoogleSheet
+   */
+  async copyWorksheet(options: GoogleSheetCli.CopyWorksheetOptions, spreadsheetId?: string): Promise<GoogleSheetCli.CopyWorksheetResult> {
+    const fileId = spreadsheetId || this.spreadsheetId;
+    if (!fileId) throw new Error('Option property "spreadsheetId" is required');
+    if (typeof options.worksheetTitle !== 'string' || !options.worksheetTitle.trim()) {
+      throw new Error('copyWorksheet requires a non-empty "worksheetTitle"');
+    }
+    if (typeof options.destinationSpreadsheetId !== 'string' || !options.destinationSpreadsheetId.trim()) {
+      throw new Error('copyWorksheet requires a non-empty "destinationSpreadsheetId"');
+    }
+
+    // Resolves the title to a sheetId and proves the source worksheet exists before anything
+    // is written anywhere.
+    const sheet = await this.getWorksheet(options.worksheetTitle, fileId);
+    const sheetId = sheet.properties?.sheetId;
+    if (typeof sheetId !== 'number') throw new Error(`Worksheet "${options.worksheetTitle}" has no sheet id to copy`);
+
+    const response = await this.sheets.spreadsheets.sheets.copyTo({
+      spreadsheetId: fileId,
+      sheetId,
+      requestBody: { destinationSpreadsheetId: options.destinationSpreadsheetId },
+    });
+    const properties = response.data;
+    if (typeof properties?.sheetId !== 'number') {
+      throw new Error(`Sheets API returned no sheet id for the copy of "${options.worksheetTitle}"`);
+    }
+
+    return {
+      spreadsheetId: fileId,
+      worksheetTitle: sheet.properties?.title || options.worksheetTitle,
+      destinationSpreadsheetId: options.destinationSpreadsheetId,
+      sheetId: properties.sheetId,
+      title: properties.title || options.worksheetTitle,
+      ...(typeof properties.index === 'number' ? { index: properties.index } : {}),
+    };
+  }
+
+  /**
+   * Export a spreadsheet as PDF or XLSX bytes through the Drive API files.export endpoint.
+   * Requires the drive.file scope, and Drive refuses to export more than 10 MB. The bytes
+   * come back raw — responseType arraybuffer, no text decoding — so what a caller writes
+   * to disk is exactly what Google sent.
+   *
+   * @param {GoogleSheetCli.ExportOptions} options - the export format
+   * @param {string} [spreadsheetId] - the spreadsheet to export; defaults to the instance id
+   * @returns {Promise<GoogleSheetCli.ExportResult>} mime type and raw bytes; never a decoded string
+   * @memberof GoogleSheet
+   */
+  async exportSpreadsheet(options: GoogleSheetCli.ExportOptions, spreadsheetId?: string): Promise<GoogleSheetCli.ExportResult> {
+    const fileId = spreadsheetId || this.spreadsheetId;
+    if (!fileId) throw new Error('Option property "spreadsheetId" is required');
+    const mimeType = EXPORT_MIME_TYPES[options.format];
+    if (!mimeType) throw new Error('exportSpreadsheet requires format "pdf" or "xlsx"');
+
+    // gaxios 7 hands back an ArrayBuffer for responseType arraybuffer; older shapes may give
+    // a Buffer. Both convert losslessly, anything else is not an export payload.
+    const raw = await this.driveRequest<Buffer | ArrayBuffer>({
+      method: 'GET',
+      url: `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/export`,
+      params: { mimeType },
+      responseType: 'arraybuffer',
+    });
+    const bytes = Buffer.isBuffer(raw) ? raw : raw instanceof ArrayBuffer ? Buffer.from(raw) : undefined;
+    if (!bytes) throw new Error('Drive API returned an unexpected export payload');
+
+    return { spreadsheetId: fileId, mimeType, bytes, byteLength: bytes.length };
+  }
+
+  /**
    * One raw Drive API call through the stored auth client, with errors translated
    * into the two messages a caller can act on.
    */
-  private async driveRequest<T>(opts: { url: string; method?: string; params?: Record<string, unknown>; data?: unknown }): Promise<T> {
+  private async driveRequest<T>(opts: {
+    url: string;
+    method?: string;
+    params?: Record<string, unknown>;
+    data?: unknown;
+    /** 'arraybuffer' keeps binary answers (files.export) as raw bytes instead of decoded text */
+    responseType?: 'json' | 'arraybuffer';
+  }): Promise<T> {
     if (!this.authClient) throw new Error('authorize() or authorizeOAuth() must run before Drive calls');
     try {
       const response = await this.authClient.request<T>(opts);
@@ -2086,20 +2685,37 @@ export default class GoogleSheet {
       const status = typeof rawStatus === 'number' ? rawStatus : undefined;
       const message = error instanceof Error ? error.message : 'Drive API request failed';
       if (status === 403) {
-        throw new Error(
+        throw this.driveStatusError(
+          status,
           `Drive API denied the request (${message}). ` +
-            'If this is an OAuth token issued before drive.file was added, run `gsheet auth:login` again to re-grant scopes.'
+            'If this is an OAuth token issued before drive.file was added, run `gsheet auth:login` again to re-grant scopes.',
+          error
         );
       }
       if (status === 404) {
-        throw new Error(
+        throw this.driveStatusError(
+          status,
           `Drive API could not find the file (${message}). ` +
             'Under the drive.file scope only files this app created or has opened are visible — ' +
-            'a pre-existing spreadsheet may need to be opened once through this app first.'
+            'a pre-existing spreadsheet may need to be opened once through this app first.',
+          error
         );
       }
       throw error;
     }
+  }
+
+  /**
+   * Wrap a Drive HTTP failure without losing its shape: the HTTP status stays available as an
+   * own enumerable `status` property (the CLI serializer maps it to the right exit envelope),
+   * and the original error rides along as a non-enumerable `cause` so error chains survive
+   * without leaking internals into JSON output. Plain Error subclassing only - no oclif, no
+   * gaxios import.
+   */
+  private driveStatusError(status: number, message: string, cause: unknown): Error {
+    const wrapped: Error & { status: number } = Object.assign(new Error(message), { status });
+    Object.defineProperty(wrapped, 'cause', { value: cause, enumerable: false, writable: true, configurable: true });
+    return wrapped;
   }
 
   /**

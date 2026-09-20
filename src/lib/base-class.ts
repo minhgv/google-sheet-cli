@@ -3,6 +3,7 @@ import { FlagInput } from '@oclif/core/interfaces';
 import { ux } from '@oclif/core/ux';
 import { createInterface } from 'readline';
 import { normalizeCredentials } from './credentials';
+import { GSheetError, GSheetErrorCode, hasTransportShape, toErrorEnvelope } from './cli-errors';
 import * as factory from './factory';
 import GoogleSheet, { GoogleSheetCli } from './google-sheet';
 
@@ -100,6 +101,7 @@ export const optionalData = Args.string({
 });
 export interface CommonFlags extends GoogleAuthFlags {
   rawOutput?: boolean;
+  json?: boolean;
   help?: void;
 }
 
@@ -185,27 +187,61 @@ export async function resolveGoogleSheetAuth(
   );
 
   if (useOauth) {
-    await gsheet.authorizeOAuth(flags?.clientSecretFile);
+    try {
+      await gsheet.authorizeOAuth(flags?.clientSecretFile);
+    } catch (err) {
+      // Service-account local failures carry AUTH_REQUIRED (below); the OAuth path must not
+      // blanket-wrap. A failure that still carries an HTTP status or network evidence is
+      // rethrown untouched, so a 403 stays FORBIDDEN, a 429 stays RATE_LIMITED and a dead
+      // connection stays NETWORK in the envelope. Only genuinely local problems - a missing
+      // or unreadable client secret, no stored token, an expired token with no refresh token -
+      // become AUTH_REQUIRED, with the original preserved as the (never-serialized) cause.
+      if (err instanceof GSheetError || hasTransportShape(err)) throw err;
+      throw new GSheetError(
+        GSheetErrorCode.AUTH_REQUIRED,
+        err instanceof Error && err.message ? err.message : 'Google OAuth authentication could not be established.',
+        { cause: err }
+      );
+    }
   } else {
-    // Only prompt for what the flags, the env and the credentials file left missing.
-    const credentials = normalizeCredentials({
-      client_email: flags?.clientEmail,
-      private_key: flags?.privateKey,
-      credentialsFile: flags?.credentialsFile,
-    });
+    // Only prompt for what the flags, the env and the credentials file left missing. Local
+    // credential failures carry AUTH_REQUIRED so the JSON envelope classifies them apart from
+    // remote authorization rejections (UNAUTHORIZED/FORBIDDEN come from HTTP status later).
+    let credentials;
+    try {
+      credentials = normalizeCredentials({
+        client_email: flags?.clientEmail,
+        private_key: flags?.privateKey,
+        credentialsFile: flags?.credentialsFile,
+      });
+    } catch (err) {
+      throw new GSheetError(
+        GSheetErrorCode.AUTH_REQUIRED,
+        err instanceof Error && err.message ? err.message : 'Google service account credentials could not be read.',
+        { cause: err }
+      );
+    }
 
     let client_email = credentials.client_email;
     let private_key = credentials.private_key;
 
+    const promptSecret = async (message: string): Promise<string> => {
+      try {
+        return await hiddenPrompt(message);
+      } catch (err) {
+        throw new GSheetError(GSheetErrorCode.AUTH_REQUIRED, err instanceof Error && err.message ? err.message : 'No input', { cause: err });
+      }
+    };
+
     if (!client_email && allowPrompt) {
-      client_email = await hiddenPrompt('What is your client email?');
+      client_email = await promptSecret('What is your client email?');
     }
     if (!private_key && allowPrompt) {
-      private_key = await hiddenPrompt('What is your private key?');
+      private_key = await promptSecret('What is your private key?');
     }
 
     if (!client_email || !private_key) {
-      throw new Error('Google Sheets authentication requires client_email and private_key.');
+      throw new GSheetError(GSheetErrorCode.AUTH_REQUIRED, 'Google Sheets authentication requires client_email and private_key.');
     }
 
     await gsheet.authorize({
@@ -217,9 +253,81 @@ export async function resolveGoogleSheetAuth(
   return gsheet;
 }
 
+const JSON_FAILURE_LONG: Record<string, true> = {
+  '--json': true,
+  '--json=true': true,
+  '--rawOutput': true,
+  '--rawOutput=true': true,
+};
+
+/**
+ * Decide JSON failure mode from raw argv alone, for failures that happen before any flag was
+ * parsed. The scan mirrors what @oclif/core's parser does with each token so operator data is
+ * never mistaken for a trigger: everything after the `--` passthrough marker is data; a
+ * value-taking long option without `=` consumes the next element even when that element looks
+ * like a flag; and inside a short cluster an option char owns the rest of the cluster (`-tj`
+ * is title "j") or, at the cluster's end, the next argv element (`-t -j` is always a failed
+ * invocation whose `-j` sits in the value slot). Only a `j`/`r` in an actual flag position
+ * counts, and explicit `--json=false` / `--rawOutput=false` overrides do not trigger.
+ */
+const jsonFailureModeFromArgv = (argv: string[], flags: FlagInput | undefined): boolean => {
+  const optionChars = new Set<string>();
+  const optionNames = new Set<string>();
+  for (const [name, flag] of Object.entries(flags ?? {})) {
+    const f = flag as { type?: string; char?: string } | undefined;
+    if (f && typeof f === 'object' && f.type === 'option') {
+      optionNames.add(name);
+      if (typeof f.char === 'string') optionChars.add(f.char);
+    }
+  }
+  const passThrough = argv.indexOf('--');
+  const limit = passThrough === -1 ? argv.length : passThrough;
+  let skipNext = false;
+  for (let i = 0; i < limit; i++) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    const arg = argv[i];
+    if (JSON_FAILURE_LONG[arg]) return true;
+    if (arg.startsWith('--')) {
+      if (arg.indexOf('=') === -1 && optionNames.has(arg.slice(2))) skipNext = true;
+      continue;
+    }
+    if (arg.length < 2 || !arg.startsWith('-')) continue;
+    for (let c = 1; c < arg.length; c++) {
+      const ch = arg[c];
+      if (optionChars.has(ch)) {
+        // the value is the rest of this cluster, or the next element when the option char
+        // ends it - either way a j/r in that position is the value, not a trigger
+        if (c === arg.length - 1) skipNext = true;
+        break;
+      }
+      if (ch === 'j' || ch === 'r') return true;
+    }
+  }
+  return false;
+};
+
 export default abstract class extends Command {
   private rawLogs: boolean = false;
+  private jsonFailures: boolean = false;
   public gsheet!: GoogleSheet;
+
+  /**
+   * Whether failures must come out as the machine-readable envelope instead of oclif's human
+   * error. Opt-in through `--json`/`-j` or `--rawOutput`/`-r` - the same flags that ask for
+   * JSON on the success side - so a caller never has to guess which mode errors arrive in.
+   *
+   * This must work even when argv parsing failed before any flag was read (an unknown flag,
+   * a missing required one), so alongside the parsed state it peeks at `this.argv`. Unlike
+   * @oclif/core's own naive `--json` indexOf scan, the peek knows how the parser assigns
+   * values, so data is never mistaken for a trigger - see jsonFailureModeFromArgv.
+   */
+  private failureJsonMode(): boolean {
+    if (this.rawLogs || this.jsonFailures) return true;
+    return jsonFailureModeFromArgv(this.argv, this.ctor.flags);
+  }
 
   static flags = {
     help: Flags.help({ char: 'h' }),
@@ -229,16 +337,23 @@ export default abstract class extends Command {
       default: false,
       required: false,
     }),
+    json: Flags.boolean({
+      char: 'j',
+      description:
+        'Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure). Success output is unchanged - use --rawOutput for JSON success.',
+      default: false,
+      required: false,
+    }),
     ...googleAuthFlags,
   } as FlagInput<CommonFlags>;
   async start(message: string) {
-    if (!this.rawLogs) {
+    if (!this.rawLogs && !this.failureJsonMode()) {
       ux.action.start(message);
     }
   }
 
   async stop(message?: string) {
-    if (!this.rawLogs) {
+    if (!this.rawLogs && !this.failureJsonMode()) {
       ux.action.stop(message);
     }
   }
@@ -256,6 +371,7 @@ export default abstract class extends Command {
     const parsed = await this.parse(this.constructor as typeof Command);
     const flags = parsed.flags as unknown as CommonFlags;
     this.rawLogs = !!flags?.rawOutput;
+    this.jsonFailures = !!flags?.json;
     this.gsheet = await resolveGoogleSheetAuth(flags, { prompt: true });
   }
 
@@ -272,6 +388,14 @@ export default abstract class extends Command {
       ux.action.stop();
     } catch {
       // a rendering failure must never swallow the error we are here to report
+    }
+    if (this.failureJsonMode()) {
+      // The one envelope for every failure in this mode - parse, auth, API and network alike -
+      // on stderr, where --rawOutput callers already keep their JSON on stdout unmixed.
+      process.stderr.write(`${JSON.stringify(toErrorEnvelope(err), null, 2)}\n`);
+      // Errors.exit throws an ExitError: the top-level runner turns it into exit code 1
+      // without printing anything, so the envelope above is the only error output.
+      this.exit(1);
     }
     this.error(err, { exit: 1 });
   }

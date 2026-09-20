@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+Bảy command mới cùng một cơ chế lỗi có cấu trúc dùng chung, đưa CLI từ 30 lên 37 commands:
+
+- **Structured JSON errors cho mọi command:** `--json`/`-j` báo lỗi dưới dạng một envelope JSON duy nhất trên stderr, exit code 1 (`code` ổn định, `message` an toàn, `retryable`, `retryAfterMs?`, `issues?` liên kết tọa độ) — output thành công giữ nguyên; `--rawOutput`/`-r` in cả success lẫn failure dưới dạng JSON. Bộ mã lỗi: `USAGE` (sai argv), `AUTH_REQUIRED`/`UNAUTHORIZED`/`FORBIDDEN` (xác thực), `NOT_FOUND`/`CONFLICT`/`REQUEST_INVALID`/`RATE_LIMITED`/`UPSTREAM`/`NETWORK` (transport/API), `VALIDATION`/`SCHEMA_INVALID`/`DATA_INVALID` (hợp đồng dữ liệu), `INTERNAL`. Envelope không bao giờ chứa credentials, request/response internals hay error object tùy ý.
+- **`data:schema`:** khám phá schema cột của worksheet (read-only) trên một mẫu giới hạn (mặc định dòng 1–100, cột A–Z; đổi bằng `--minRow/--minCol/--maxRow/--maxCol`, dòng mẫu đầu là header row). Báo header thực tế kèm tọa độ A1 tuyệt đối, kiểu dữ liệu suy luận kèm số mẫu, số ô chứa formula, data-validation rules và named ranges; empty/duplicate header và mixed type được báo minh bạch. Kiểu suy luận chỉ mô tả mẫu — Google lưu date dưới dạng number, không phải schema chính thức.
+- **`data:validate`:** kiểm tra dữ liệu worksheet chống lại một TableSchema (`--schema` JSON inline hoặc `--schemaFile`/stdin), tái sử dụng đúng semantics của report (`required`, `type`, `enum`, `unique`, `min`/`max`). Mỗi violation báo kèm dòng và tọa độ A1 chính xác; dữ liệu sai exit 1 với mã `DATA_INVALID`, schema malformed fail với `SCHEMA_INVALID` trước khi bất kỳ request nào rời tiến trình. Không bao giờ ghi.
+- **`data:clear`:** xóa giá trị (values-only) trong một range A1 có giới hạn hai chiều, giữ nguyên number format và mọi thuộc tính ô khác (một lệnh values clear native sau formula guard). Ô formula từ chối bị xóa trừ khi có `--overwriteFormulas`; `--dryRun` xem trước số ô sẽ bị xóa với zero mutation.
+- **`data:upsert`:** upsert theo một cột key. Key tồn tại → chỉ cập nhật đúng các ô input cung cấp (cột bị bỏ qua và formula hiện có được giữ nguyên); key mới → append dưới bảng. Input header-first dạng JSON/CSV/stdin, đúng một cột `--key` bắt buộc, so khớp key theo kiểu dữ liệu (string `"001"` không bao giờ khớp number `1`, leading zero được giữ), ghi `RAW` mặc định, từ chối key rỗng/trùng, và từ chối trước khi ghi nếu range giới hạn che giấu dữ liệu bảng phía sau. `--dryRun` báo added/updated/unchanged và planned ranges. Chỉ single-writer: chạy lại cùng input không sinh bản ghi trùng, nhưng không có transaction, không blind-retry sau failure mơ hồ, không hỗ trợ nhiều writer đồng thời.
+- **`spreadsheet:copy`:** nhân bản spreadsheet qua Drive API. Source không đổi, receipt trả id và title do server gán; CLI không tự cấp lại sharing grants của nguồn. Kiểm tra quyền hiệu lực của bản sao trước khi chia sẻ dữ liệu nhạy cảm.
+- **`worksheet:copy`:** copy một worksheet sang spreadsheet đích tường minh qua Sheets API. Values và formulas được mang theo, source không đổi; khi đích đã có sheet trùng tên, server tự gán title duy nhất và receipt báo title cuối cùng cùng sheet id mới.
+- **`spreadsheet:export`:** export spreadsheet ra file PDF hoặc XLSX local qua Drive API. Ghi binary an toàn, atomic (file tạm + rename; file output sẵn có sống sót qua failure), chỉ thay thế khi có `--overwrite` tường minh, receipt kèm mime type, số byte và đường dẫn. Chịu giới hạn export 10 MB của Drive, và quyền truy cập nằm trong scope `drive.file` (chỉ các file app này tạo hoặc đã mở) — không phải toàn bộ Drive.
+
+### Fixed
+
+- Lỗi refresh OAuth token giờ giữ lại HTTP status và error code của Google (cùng `cause` non-enumerable) để structured errors phân loại đúng, đồng thời giữ nguyên message lỗi cũ.
+- Lỗi xác thực/input cục bộ được phân loại là `AUTH_REQUIRED`, `VALIDATION` hoặc `NETWORK` thay vì `INTERNAL` chung chung trong structured error mode.
+- `data:validate` thu thập cả lỗi trùng giá trị (`unique`) lẫn lỗi kiểu/required trong cùng một lần kiểm tra, thay vì để lỗi ở một dòng che khuất duplicate ở các dòng khác. Kết quả chỉ áp dụng cho phạm vi mẫu đã chọn (mặc định 100 dòng × 26 cột).
+- Giới hạn structured errors: lỗi unknown command/topic xảy ra trước khi command class được nạp vẫn dùng output human-readable của oclif.
+
+---
+
 ## [Fork Additions] — 2026-09-18 to 2026-09-19 (minhgv)
 
 Tất cả tính năng được phát triển sau khi fork từ upstream (`jroehl/google-sheet-cli`), đưa CLI từ một công cụ CRUD cơ bản 9 lệnh thành **AI Agent Data Gateway** với 30 commands, hỗ trợ offline sandbox, batch APIs, định dạng bảng, thao tác cấu trúc và phân quyền Drive.

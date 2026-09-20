@@ -12,9 +12,9 @@ Apply cell formatting (text style, colors, alignment, wrap, number format, borde
 
 ```
 USAGE
-  $ google-sheet format:cells -s <value> -t <value> [-h] [-r] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [--range <value>] [--bold] [--italic] [--underline] [--strikethrough] [--fontSize
-    <value>] [--fontFamily <value>] [--textColor <value>] [--backgroundColor <value>] [--horizontalAlignment
+  $ google-sheet format:cells -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [--range <value>] [--bold] [--italic] [--underline] [--strikethrough]
+    [--fontSize <value>] [--fontFamily <value>] [--textColor <value>] [--backgroundColor <value>] [--horizontalAlignment
     LEFT|CENTER|RIGHT] [--verticalAlignment TOP|MIDDLE|BOTTOM] [--wrapStrategy OVERFLOW_CELL|CLIP|WRAP]
     [--numberFormatType TEXT|NUMBER|PERCENT|CURRENCY|DATE|TIME|DATE_TIME|SCIENTIFIC --numberFormat <value>] [--borders
     <value>] [--borderStyle DOTTED|DASHED|SOLID|SOLID_MEDIUM|SOLID_THICK|DOUBLE|NONE] [--borderColor <value>] [--clear]
@@ -23,6 +23,8 @@ USAGE
 FLAGS
   -h, --help                          Show CLI help.
   -i, --input=<value>                 Path to a JSON format spec file (or "-" for stdin)
+  -j, --json                          Report failures as a machine-readable JSON envelope on stderr (exit code 1 on
+                                      failure). Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput                     Get the raw output as a JSON string
   -s, --spreadsheetId=<value>         (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>        (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
@@ -86,12 +88,14 @@ Merge or unmerge cells over a bounded range. Merging keeps the top-left value; o
 
 ```
 USAGE
-  $ google-sheet format:merge -s <value> -t <value> --range <value> [-h] [-r] [-c <value>] [-p <value>] [-f
+  $ google-sheet format:merge -s <value> -t <value> --range <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f
     <value>] [--useOauth] [--clientSecretFile <value>] [--type MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS | --unmerge]
     [--dryRun]
 
 FLAGS
   -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use

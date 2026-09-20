@@ -44,6 +44,31 @@ export interface FakeWorksheet {
   };
   /** cell values keyed by `${row}:${col}`, both 1 based */
   cells: Map<string, string>;
+  /** rich per-cell fixture detail (formula results, formatting, validation), same keying; served only by spreadsheets.get gridData */
+  cellMeta?: Map<string, FakeCellMeta>;
+}
+
+/**
+ * Optional per-cell fixture detail carried into `spreadsheets.get` gridData. The plain `cells`
+ * map stays the source of the stored text; this adds what a real server would have computed or
+ * attached beyond it, in the shapes the live CellData uses.
+ */
+export interface FakeCellMeta {
+  /** formula text; inferred from a leading "=" in the stored text when absent */
+  formula?: string;
+  /** evaluated value (e.g. a computed formula result); defaults to the entered value */
+  effectiveValue?: { numberValue?: number; stringValue?: string; boolValue?: boolean; errorValue?: { type?: string; message?: string } };
+  /** display text (e.g. percent formatting of 0.15 as "15%"); defaults to the stored text */
+  formattedValue?: string;
+  /** data validation rule carried on the cell */
+  dataValidation?: { condition: { type: string; values?: { userEnteredValue: string }[] }; showCustomUi?: boolean; strict?: boolean };
+}
+
+/** A named range as spreadsheets.get reports it; Google ranges are 0-based and end-exclusive. */
+export interface FakeNamedRange {
+  namedRangeId: string;
+  name: string;
+  range: { sheetId?: number; startRowIndex?: number; endRowIndex?: number; startColumnIndex?: number; endColumnIndex?: number };
 }
 
 export interface FakeSpreadsheet {
@@ -51,6 +76,8 @@ export interface FakeSpreadsheet {
   title: string;
   sheets: FakeWorksheet[];
   developerMetadata?: Record<string, unknown>[];
+  /** named ranges defined on the spreadsheet; rendered by spreadsheets.get when present */
+  namedRanges?: FakeNamedRange[];
 }
 
 export interface RecordedRequest {
@@ -71,7 +98,11 @@ export interface FakeRange {
 
 interface FakeResponse {
   status: number;
-  body: any;
+  body?: unknown;
+  /** exact bytes to serve instead of a JSON-encoded body (Drive copy/export style payloads) */
+  raw?: Buffer;
+  /** content-type header for a raw response; defaults to the JSON content type */
+  contentType?: string;
 }
 
 interface ResolvedRange {
@@ -81,6 +112,23 @@ interface ResolvedRange {
   endRow: number;
   endCol: number;
   bounded: boolean;
+}
+
+/** The spreadsheets.get body: worksheet properties, optional per-range grid data, named ranges. */
+interface FakeSpreadsheetBody {
+  spreadsheetId: string;
+  properties: Record<string, string>;
+  sheets: { properties: Record<string, unknown>; data?: FakeGridData[] }[];
+  developerMetadata: Record<string, unknown>[];
+  spreadsheetUrl: string;
+  namedRanges?: FakeNamedRange[];
+}
+
+/** One requested range's worth of cell data; startRow/startColumn are 0-based like Google's. */
+interface FakeGridData {
+  startRow: number;
+  startColumn: number;
+  rowData?: { values: Record<string, unknown>[] }[];
 }
 
 /**
@@ -242,6 +290,33 @@ const QUOTA_REJECTION: FakeResponse = {
   },
 };
 
+const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+export { XLSX_MIME_TYPE };
+
+/** The export formats the fake serves; the live Drive API allows more, the CLI offers these two. */
+const EXPORT_MIME_TYPES: Record<string, true> = {
+  'application/pdf': true,
+  [XLSX_MIME_TYPE]: true,
+};
+
+/**
+ * Deterministic stand-in bytes for a Drive files.export response, shaped like the real thing:
+ * a `%PDF-` or `PK` (zip) magic prefix, a readable descriptor line, then filler. The same inputs
+ * always produce byte-identical output, so tests can assert exact-byte round-trips through the
+ * whole stack.
+ *
+ * @param {string} spreadsheetId - id woven into the descriptor, so two exports differ
+ * @param {string} mimeType - decides the magic prefix and the descriptor text
+ * @returns {Buffer} the fake export payload
+ */
+const fakeExportBytes = (spreadsheetId: string, mimeType: string): Buffer => {
+  const magic = Buffer.from(mimeType === 'application/pdf' ? '%PDF-1.4\n' : 'PK\x03\x04', 'utf8');
+  const descriptor = Buffer.from(`gsheet-fake-export ${mimeType} ${spreadsheetId}\n`, 'utf8');
+  const filler = Buffer.alloc(256 - magic.length - descriptor.length, 0x2e);
+  return Buffer.concat([magic, descriptor, filler]);
+};
+export { fakeExportBytes };
+
 export class FakeSheets {
   readonly spreadsheets = new Map<string, FakeSpreadsheet>();
   readonly requests: RecordedRequest[] = [];
@@ -249,8 +324,11 @@ export class FakeSheets {
 
   private nextSheetId = 100;
   private nextSpreadsheetId = 1;
+  private nextCopyId = 1;
   private nextPermissionId = 1;
   private quotaRejectionsLeft = 0;
+  /** queued injected failures matched by URL substring; see failRequests */
+  private failureQueue: { pathPart: string; status: number; times: number }[] = [];
   /** Drive permissions keyed by fileId */
   private permissions = new Map<string, { id: string; type: string; role: string; emailAddress?: string; domain?: string }[]>();
   private originalHttpsRequest?: Function;
@@ -304,8 +382,10 @@ export class FakeSheets {
     this.spreadsheets.clear();
     this.requests.length = 0;
     this.quotaRejectionsLeft = 0;
+    this.failureQueue.length = 0;
     this.permissions.clear();
     this.nextPermissionId = 1;
+    this.nextCopyId = 1;
   }
 
   /**
@@ -322,6 +402,22 @@ export class FakeSheets {
    */
   rejectWithQuota(times = 1): void {
     this.quotaRejectionsLeft = times;
+  }
+
+  /**
+   * Fail the next `times` requests whose URL contains `pathPart` with `status`, then serve the
+   * real handler again. Where the quota knob only answers 429, this accepts any status so a test
+   * can stage the ambiguous failure a non-idempotent write can meet — and prove the client does
+   * not quietly replay it. The token endpoint is left alone, as with the quota knob.
+   *
+   * @param {string} pathPart - substring matched against the full request URL
+   * @param {number} status - HTTP status to answer with
+   * @param {number} [times=1] - how many matching requests to fail
+   * @returns {void}
+   * @memberof FakeSheets
+   */
+  failRequests(pathPart: string, status: number, times = 1): void {
+    this.failureQueue.push({ pathPart, status, times });
   }
 
   /**
@@ -401,6 +497,27 @@ export class FakeSheets {
   }
 
   /**
+   * Attach rich cell detail (formula result, formatted text, validation) straight into the fake,
+   * bypassing the API; served by spreadsheets.get gridData. `null` drops the detail again.
+   *
+   * @param {string} spreadsheetId
+   * @param {string} title
+   * @param {string} a1 - an anchored cell like "B2"; ranges are refused
+   * @param {FakeCellMeta | null} meta
+   * @returns {void}
+   * @memberof FakeSheets
+   */
+  setCellMeta(spreadsheetId: string, title: string, a1: string, meta: FakeCellMeta | null): void {
+    const { startRow, startCol } = parseFakeRange(a1);
+    if (!startRow || !startCol) throw new Error(`setCellMeta needs an anchored cell, got "${a1}"`);
+    const sheet = this.worksheet(spreadsheetId, title);
+    if (!sheet.cellMeta) sheet.cellMeta = new Map();
+    const key = `${startRow}:${startCol}`;
+    if (meta === null) sheet.cellMeta.delete(key);
+    else sheet.cellMeta.set(key, meta);
+  }
+
+  /**
    * Stand-in for `https.request`, answering out of the in-memory state
    *
    * @param {*} options
@@ -442,12 +559,13 @@ export class FakeSheets {
       } catch (error) {
         answer = { status: 500, body: { error: { code: 500, message: (error as Error).message, status: 'INTERNAL' } } };
       }
-      const payload = Buffer.from(JSON.stringify(answer.body), 'utf8');
+      const payload = answer.raw ?? Buffer.from(JSON.stringify(answer.body ?? null), 'utf8');
+      const contentType = answer.contentType ?? 'application/json; charset=UTF-8';
       const res: any = new PassThrough();
       res.statusCode = answer.status;
       res.statusMessage = answer.status === 200 ? 'OK' : 'Bad Request';
-      res.headers = { 'content-type': 'application/json; charset=UTF-8', 'content-length': String(payload.length) };
-      res.rawHeaders = ['content-type', 'application/json; charset=UTF-8', 'content-length', String(payload.length)];
+      res.headers = { 'content-type': contentType, 'content-length': String(payload.length) };
+      res.rawHeaders = ['content-type', contentType, 'content-length', String(payload.length)];
       if (callback) callback(res);
       req.emit('response', res);
       res.end(payload);
@@ -476,6 +594,22 @@ export class FakeSheets {
       return { status: 200, body: { access_token: 'fake-access-token', expires_in: 3600, token_type: 'Bearer' } };
     }
 
+    const failure = this.failureQueue[0];
+    if (failure && url.includes(failure.pathPart)) {
+      failure.times--;
+      if (failure.times <= 0) this.failureQueue.shift();
+      return {
+        status: failure.status,
+        body: {
+          error: {
+            code: failure.status,
+            message: `Injected failure matching "${failure.pathPart}"`,
+            status: failure.status >= 500 ? 'INTERNAL' : 'FAILED_PRECONDITION',
+          },
+        },
+      };
+    }
+
     if (parsed.hostname === DRIVE_HOST && parsed.pathname.startsWith('/drive/v3/')) {
       return this.driveHandle(method, parsed, body);
     }
@@ -501,6 +635,14 @@ export class FakeSheets {
     const valuesBatchUpdate = path.match(/^\/v4\/spreadsheets\/([^/]+)\/values:batchUpdate$/);
     if (method === 'POST' && valuesBatchUpdate) return this.valuesBatchUpdate(valuesBatchUpdate[1], body);
 
+    const copyTo = path.match(/^\/v4\/spreadsheets\/([^/]+)\/sheets\/([^:]+):copyTo$/);
+    if (method === 'POST' && copyTo) return this.copySheetTo(copyTo[1], copyTo[2], body);
+
+    // Before the generic values matcher: its `(.+?)(:append)?$` would otherwise swallow the
+    // ":clear" suffix into the range group and fall through to an unhandled 404.
+    const valuesClear = path.match(/^\/v4\/spreadsheets\/([^/]+)\/values\/(.+?):clear$/);
+    if (method === 'POST' && valuesClear) return this.valuesClear(valuesClear[1], valuesClear[2]);
+
     const values = path.match(/^\/v4\/spreadsheets\/([^/]+)\/values\/(.+?)(:append)?$/);
     if (values) {
       const [, spreadsheetId, range, append] = values;
@@ -509,7 +651,7 @@ export class FakeSheets {
       if (method === 'POST' && append) return this.valuesAppend(spreadsheetId, range, body, parsed);
     }
     const spreadsheet = path.match(/^\/v4\/spreadsheets\/([^/]+)$/);
-    if (method === 'GET' && spreadsheet) return this.spreadsheetGet(spreadsheet[1]);
+    if (method === 'GET' && spreadsheet) return this.spreadsheetGet(spreadsheet[1], parsed);
 
     return { status: 404, body: { error: { code: 404, message: `Unhandled ${method} ${path}`, status: 'NOT_FOUND' } } };
   }
@@ -555,7 +697,92 @@ export class FakeSheets {
       return { status: 200, body: {} };
     }
 
+    const copy = path.match(/^\/drive\/v3\/files\/([^/]+)\/copy$/);
+    if (method === 'POST' && copy) return this.driveCopyFile(decodeURIComponent(copy[1]), body);
+
+    const exportMatch = path.match(/^\/drive\/v3\/files\/([^/]+)\/export$/);
+    if (method === 'GET' && exportMatch) {
+      const fileId = decodeURIComponent(exportMatch[1]);
+      if (!this.spreadsheets.has(fileId)) return this.notFound();
+      const mimeType = String(parsed.searchParams.get('mimeType') || '');
+      if (!EXPORT_MIME_TYPES[mimeType]) {
+        return this.badRequest(`Export only supports ${Object.keys(EXPORT_MIME_TYPES).join(', ')}; got "${mimeType}".`);
+      }
+      return { status: 200, raw: fakeExportBytes(fileId, mimeType), contentType: mimeType };
+    }
+
     return { status: 404, body: { error: { code: 404, message: `Unhandled Drive ${method} ${path}`, status: 'NOT_FOUND' } } };
+  }
+
+  /**
+   * Drive v3 files.copy: deep-copy the whole in-memory spreadsheet under a fresh id, keeping
+   * the source title when the request sends no `name`. The clone is a real spreadsheet —
+   * sheets, cells and grid sizes included — so tests can read it back through the ordinary
+   * Sheets endpoints.
+   */
+  private driveCopyFile(fileId: string, body: unknown): FakeResponse {
+    const source = this.spreadsheets.get(fileId);
+    if (!source) return this.notFound();
+
+    const requestedName = body && typeof body === 'object' && 'name' in body ? body.name : undefined;
+    const title = typeof requestedName === 'string' && requestedName.length > 0 ? requestedName : source.title;
+
+    const spreadsheetId = `fake-copy-${this.nextCopyId++}`;
+    const clone = this.addSpreadsheet(spreadsheetId, title, []);
+    clone.sheets = source.sheets.map((sheet, index) => ({
+      ...sheet,
+      sheetId: this.nextSheetId++,
+      index,
+      cells: new Map(sheet.cells),
+      cellMeta: sheet.cellMeta ? new Map(sheet.cellMeta) : undefined,
+    }));
+    return {
+      status: 200,
+      body: {
+        kind: 'drive#file',
+        id: spreadsheetId,
+        name: clone.title,
+        mimeType: 'application/vnd.google-apps.spreadsheet',
+        webViewLink: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+      },
+    };
+  }
+
+  /**
+   * `spreadsheets.sheets.copyTo`: clone one worksheet into an explicit destination spreadsheet,
+   * like the live API — including same-spreadsheet duplication and the server assigning a
+   * unique title ("Sheet Copy") when the source title is already taken there. Cells are copied
+   * verbatim, so a formula stored as text travels as a formula.
+   */
+  private copySheetTo(spreadsheetId: string, rawSheetId: string, body: unknown): FakeResponse {
+    const source = this.spreadsheets.get(spreadsheetId);
+    if (!source) return this.notFound();
+    const sheetId = Number(rawSheetId);
+    const sheet = source.sheets.find((s) => s.sheetId === sheetId);
+    if (!sheet) return this.notFound();
+
+    const destinationSpreadsheetId =
+      body && typeof body === 'object' && 'destinationSpreadsheetId' in body && typeof body.destinationSpreadsheetId === 'string'
+        ? body.destinationSpreadsheetId
+        : undefined;
+    const destination = destinationSpreadsheetId ? this.spreadsheets.get(destinationSpreadsheetId) : undefined;
+    if (!destination) return this.notFound();
+
+    // The server, not the caller, settles the title: the source title when free, otherwise
+    // " Copy" suffixed until it is unique in the destination.
+    let title = sheet.title;
+    while (destination.sheets.some((s) => s.title === title)) title = `${title} Copy`;
+
+    const clone: FakeWorksheet = {
+      ...sheet,
+      title,
+      sheetId: this.nextSheetId++,
+      index: destination.sheets.length,
+      cells: new Map(sheet.cells),
+      cellMeta: sheet.cellMeta ? new Map(sheet.cellMeta) : undefined,
+    };
+    destination.sheets.push(clone);
+    return { status: 200, body: this.renderSheetProperties(clone) };
   }
 
   /**
@@ -569,12 +796,23 @@ export class FakeSheets {
   }
 
   /**
-   * `spreadsheets.get`
+   * `spreadsheets.get`. Without a `ranges` query parameter the answer carries worksheet
+   * properties only - what the plain metadata calls expect, with no grid to allocate. With
+   * ranges, each requested range produces one `sheets[].data` GridData entry (0-based
+   * `startRow`/`startColumn`, per-cell entered/effective/formatted values, validation) and the
+   * spreadsheet's named ranges ride along at the top level, like the live API. `fields` masks
+   * are not filtered: the fake over-serves, which can only make a test stricter.
    */
-  private spreadsheetGet(spreadsheetId: string): FakeResponse {
+  private spreadsheetGet(spreadsheetId: string, parsed: URL): FakeResponse {
     const spreadsheet = this.spreadsheets.get(spreadsheetId);
     if (!spreadsheet) return this.notFound();
-    return { status: 200, body: this.renderSpreadsheet(spreadsheet) };
+    const ranges = parsed.searchParams.getAll('ranges');
+    try {
+      return { status: 200, body: this.renderSpreadsheet(spreadsheet, ranges) };
+    } catch (error) {
+      // an unparseable requested range is Google's 400, not a fake crash
+      return this.badRequest((error as Error).message);
+    }
   }
 
   /**
@@ -591,8 +829,13 @@ export class FakeSheets {
     const working: FakeSpreadsheet = {
       spreadsheetId: spreadsheet.spreadsheetId,
       title: spreadsheet.title,
-      sheets: spreadsheet.sheets.map((sheet) => ({ ...sheet, cells: new Map(sheet.cells) })),
+      sheets: spreadsheet.sheets.map((sheet) => ({
+        ...sheet,
+        cells: new Map(sheet.cells),
+        cellMeta: sheet.cellMeta ? new Map(sheet.cellMeta) : undefined,
+      })),
       developerMetadata: spreadsheet.developerMetadata?.map((meta) => ({ ...meta })),
+      namedRanges: spreadsheet.namedRanges?.map((namedRange) => ({ ...namedRange, range: { ...namedRange.range } })),
     };
     const sheetIdInUse = (id: number): boolean => working.sheets.some((s) => s.sheetId === id);
 
@@ -916,21 +1159,28 @@ export class FakeSheets {
       }
 
       if (request.addNamedRange) {
+        const namedRangeId = `nr-${this.nextSheetId++}`;
+        const namedRange: FakeNamedRange = { namedRangeId, ...request.addNamedRange.namedRange };
+        if (!working.namedRanges) working.namedRanges = [];
+        working.namedRanges.push(namedRange);
         replies.push({
           addNamedRange: {
-            namedRange: {
-              namedRangeId: `nr-${this.nextSheetId++}`,
-              ...request.addNamedRange.namedRange,
-            },
+            namedRange,
           },
         });
         continue;
       }
 
       if (request.updateNamedRange) {
+        const incoming = request.updateNamedRange.namedRange ?? {};
+        if (!working.namedRanges) working.namedRanges = [];
+        const existing = working.namedRanges.find((candidate) => candidate.namedRangeId === incoming.namedRangeId);
+        const updated: FakeNamedRange = { ...(existing ?? { namedRangeId: incoming.namedRangeId }), ...incoming };
+        if (existing) Object.assign(existing, updated);
+        else working.namedRanges.push(updated);
         replies.push({
           updateNamedRange: {
-            namedRange: request.updateNamedRange.namedRange,
+            namedRange: updated,
           },
         });
         continue;
@@ -943,6 +1193,7 @@ export class FakeSheets {
     // a half-applied batch, and failures above leave the live spreadsheet untouched.
     spreadsheet.sheets = working.sheets;
     spreadsheet.developerMetadata = working.developerMetadata;
+    spreadsheet.namedRanges = working.namedRanges;
     return { status: 200, body: { spreadsheetId, replies } };
   }
 
@@ -1086,6 +1337,37 @@ export class FakeSheets {
       },
     };
   }
+  /**
+   * `spreadsheets.values.clear`. Blanks every stored value inside the range and nothing else:
+   * format/validation fixture detail (cellMeta) and the grid size are untouched, exactly the
+   * values-only semantics the API documents. The response echoes the cleared range.
+   */
+  private valuesClear(spreadsheetId: string, range: string): FakeResponse {
+    const spreadsheet = this.spreadsheets.get(spreadsheetId);
+    if (!spreadsheet) return this.notFound();
+
+    let target: ResolvedRange;
+    try {
+      target = this.resolve(spreadsheet, range);
+    } catch (error) {
+      return this.badRequest((error as Error).message);
+    }
+
+    const gridError = this.checkGrid(target.sheet, range, target, []);
+    if (gridError) return gridError;
+
+    const { sheet, startRow, startCol, endRow, endCol } = target;
+    for (let r = startRow; r <= Math.min(endRow, sheet.rowCount); r++) {
+      for (let c = startCol; c <= Math.min(endCol, sheet.columnCount); c++) {
+        sheet.cells.delete(`${r}:${c}`);
+      }
+    }
+    return {
+      status: 200,
+      body: { spreadsheetId, clearedRange: formatRange(sheet.title, startRow, startCol, endRow, endCol) },
+    };
+  }
+
   /**
    * `spreadsheets.values.get`. A read whose range reaches past the grid is refused exactly the
    * way a write in the same position is refused. That is the strict reading, and the library
@@ -1317,14 +1599,98 @@ export class FakeSheets {
     return properties;
   }
 
-  private renderSpreadsheet(spreadsheet: FakeSpreadsheet): any {
-    return {
+  private renderSpreadsheet(spreadsheet: FakeSpreadsheet, ranges: string[] = []): FakeSpreadsheetBody {
+    // Google resolves requested ranges into per-sheet gridData entries; a sheet no range names
+    // carries no data at all. Resolution errors propagate: spreadsheetGet turns them into 400s.
+    const dataBySheet = new Map<FakeWorksheet, FakeGridData[]>();
+    for (const rangeStr of ranges) {
+      const target = this.resolve(spreadsheet, rangeStr); // throws on an unparseable/unknown range
+      const entries = dataBySheet.get(target.sheet) ?? [];
+      entries.push(this.renderGridData(target));
+      dataBySheet.set(target.sheet, entries);
+    }
+
+    const body: FakeSpreadsheetBody = {
       spreadsheetId: spreadsheet.spreadsheetId,
       properties: { title: spreadsheet.title, locale: 'en_US', timeZone: 'Etc/GMT' },
-      sheets: spreadsheet.sheets.map((sheet) => ({ properties: this.renderSheetProperties(sheet) })),
+      sheets: spreadsheet.sheets.map((sheet) => {
+        const data = dataBySheet.get(sheet);
+        return data ? { properties: this.renderSheetProperties(sheet), data } : { properties: this.renderSheetProperties(sheet) };
+      }),
       developerMetadata: spreadsheet.developerMetadata || [],
       spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheet.spreadsheetId}/edit`,
     };
+    if (spreadsheet.namedRanges?.length) {
+      body.namedRanges = spreadsheet.namedRanges.map((namedRange) => ({ ...namedRange, range: { ...namedRange.range } }));
+    }
+    return body;
+  }
+
+  /**
+   * One GridData entry for a resolved range: a 0-based anchor, one rowData entry per row in the
+   * range with positional CellData per column (index n of `values` is always column
+   * startColumn + n, even when the cell is empty), and trailing fully-empty rows trimmed the
+   * way the live response trims them. Interior empty rows stay put so row indexing holds.
+   */
+  private renderGridData(target: ResolvedRange): FakeGridData {
+    const { sheet } = target;
+    const startRow = Math.min(target.startRow, sheet.rowCount);
+    const startColumn = Math.min(target.startCol, sheet.columnCount);
+    const endRow = Math.min(target.endRow, sheet.rowCount);
+    const endCol = Math.min(target.endCol, sheet.columnCount);
+
+    const rowData: { values: Record<string, unknown>[] }[] = [];
+    let lastContent = -1;
+    for (let r = startRow; r <= endRow; r++) {
+      const values: Record<string, unknown>[] = [];
+      let hasContent = false;
+      for (let c = startColumn; c <= endCol; c++) {
+        const cell = this.renderCellData(sheet, r, c);
+        if (cell !== undefined) hasContent = true;
+        values.push(cell ?? {});
+      }
+      if (hasContent) lastContent = rowData.length;
+      rowData.push({ values });
+    }
+    rowData.length = lastContent + 1;
+
+    const data: FakeGridData = { startRow: startRow - 1, startColumn: startColumn - 1 };
+    if (rowData.length > 0) data.rowData = rowData;
+    return data;
+  }
+
+  /**
+   * One CellData as the live API renders it for the metadata mask: the stored text typed into
+   * userEnteredValue ("=" text becomes formulaValue, numbers and booleans are typed), the
+   * effective value defaulting to the entered one (fixtures override it where a real server
+   * would have evaluated a formula), display text left off formulas the fake cannot evaluate,
+   * and validation only where a fixture carries it.
+   */
+  private renderCellData(sheet: FakeWorksheet, row: number, col: number): Record<string, unknown> | undefined {
+    const key = `${row}:${col}`;
+    const raw = sheet.cells.get(key);
+    const meta = sheet.cellMeta?.get(key);
+    const stored = raw ? raw : undefined; // '' counts as empty, like every values read
+    if (stored === undefined && !meta) return undefined;
+
+    const formula = meta?.formula ?? (stored !== undefined && stored.startsWith('=') ? stored : undefined);
+    let entered: Record<string, unknown> | undefined;
+    if (stored !== undefined) {
+      if (formula !== undefined) entered = { formulaValue: formula };
+      else if (stored === 'TRUE' || stored === 'true') entered = { boolValue: true };
+      else if (stored === 'FALSE' || stored === 'false') entered = { boolValue: false };
+      else if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(stored)) entered = { numberValue: Number(stored) };
+      else entered = { stringValue: stored };
+    }
+
+    const cell: Record<string, unknown> = {};
+    if (entered) cell.userEnteredValue = entered;
+    if (meta?.effectiveValue) cell.effectiveValue = { ...meta.effectiveValue };
+    else if (entered) cell.effectiveValue = { ...entered };
+    if (meta?.formattedValue !== undefined) cell.formattedValue = meta.formattedValue;
+    else if (stored !== undefined && formula === undefined) cell.formattedValue = stored;
+    if (meta?.dataValidation) cell.dataValidation = JSON.parse(JSON.stringify(meta.dataValidation));
+    return cell;
   }
 
   private notFound(): FakeResponse {

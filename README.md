@@ -4,12 +4,14 @@ A simple helper cli to interact with google sheets.
 
 ## Features
 
+The fork provides **37 commands**. See [CHANGELOG.md](CHANGELOG.md) for the latest additions; the 2.x migration notes below describe the upstream platform release, not the fork's later feature set.
+
 | Group | Commands | What it does |
 |---|---|---|
 | 🔐 Auth | `auth:login` `auth:logout` `auth:status` | OAuth 2.0 Desktop flow; token at `~/.config/google-sheet-cli/token.json` |
-| 📊 Data | `data:get` `data:append` `data:append-table` `data:update` `data:batch-get` `data:batch-update` `data:find` | Read/write ranges; batch APIs; `--dryRun`, `--overwriteFormulas` guard, `--valueRenderOption`, file/stdin input; `data:find` locates cells by condition |
-| 📄 Spreadsheet | `spreadsheet:add` `spreadsheet:get` `spreadsheet:share` `spreadsheet:permissions` `spreadsheet:unshare` | Create/inspect spreadsheets; Drive-API sharing (`--email`/`--domain`/`--anyone`, `--role`, `--notify` off by default) |
-| 📑 Worksheet | `worksheet:add` `worksheet:get` `worksheet:remove` `worksheet:rename` | Manage worksheets inside a spreadsheet |
+| 📊 Data | `data:get` `data:append` `data:append-table` `data:update` `data:batch-get` `data:batch-update` `data:find` `data:schema` `data:validate` `data:clear` `data:upsert` | Read/write ranges; batch APIs; `--dryRun`, `--overwriteFormulas` guard, `--valueRenderOption`, file/stdin input; `data:find` locates cells by condition; `data:schema` discovers column schema (read-only); `data:validate` checks data against a TableSchema; `data:clear` clears bounded values; `data:upsert` updates-or-appends rows by key column |
+| 📄 Spreadsheet | `spreadsheet:add` `spreadsheet:get` `spreadsheet:share` `spreadsheet:permissions` `spreadsheet:unshare` `spreadsheet:copy` `spreadsheet:export` | Create/inspect spreadsheets; Drive-API sharing (`--email`/`--domain`/`--anyone`, `--role`, `--notify` off by default); `spreadsheet:copy` duplicates a spreadsheet; `spreadsheet:export` writes PDF/XLSX to a local file |
+| 📑 Worksheet | `worksheet:add` `worksheet:get` `worksheet:remove` `worksheet:rename` `worksheet:copy` | Manage worksheets inside a spreadsheet; `worksheet:copy` copies a sheet into another spreadsheet |
 | 🎨 Format | `format:cells` `format:merge` | `userEnteredFormat` only — bold, colors, borders, number formats, merge; `--dryRun` |
 | 📐 Grid | `grid:insert` `grid:delete` `grid:hide` `grid:resize` `grid:freeze` | Structural row/column mutations; `grid:delete --dryRun` previews values about to be lost |
 | 📁 Workbook | `workbook:inspect` `workbook:read` `workbook:write` | Offline local .xlsx — no credentials, no network; atomic write + SHA-256 |
@@ -364,7 +366,7 @@ console.log('Worksheet Rows:', reportDoc.sheets[0].rows);
 
 ### Data Input: Positional JSON, CSV/JSON Files, and Stdin
 
-Commands accepting tabular datasets (`data:append`, `data:update`, `data:append-table`, `data:batch-update`, `workbook:write`, `report:run`) support three flexible input mechanisms:
+Commands accepting tabular datasets (`data:append`, `data:update`, `data:append-table`, `data:batch-update`, `data:upsert`, `workbook:write`, `report:run`) support three flexible input mechanisms:
 
 1. **Positional JSON argument (inline arrays):**
    ```sh-session
@@ -417,6 +419,86 @@ To minimize API round-trips and avoid quota throttling, use batch operations:
 
 * **`data:append-table` (Recommended for structured tables):** Calls Google Sheets API's native `POST /values/{range}:append`. It scans for existing table boundaries, locates the true end of the tabular data, and appends rows directly to the table without scanning the entire worksheet grid. This preserves empty buffer rows and allows multiple tables to coexist on a single sheet.
 * **`data:append` (Legacy bounding box append):** Reads the worksheet grid (`getData`), computes the overall bounding box (`maxRow`), and writes to row `maxRow + 1`.
+
+### Schema Discovery, Validation, and Safe Data Mutation
+
+#### `data:schema`: see what a worksheet actually holds (read-only)
+
+```sh-session
+$ google-sheet data:schema -s <spreadsheetId> -t "Q3 Sales"
+```
+
+Samples a bounded range (default rows 1–100, columns A–Z; move it with `--minRow/--minCol/--maxRow/--maxCol` — the first sampled row is the header row) and prints one line per column: the header text with its absolute A1 cell, inferred types with sample counts (`number (2), string`), the formula-cell count, and any data-validation rules (`ONE_OF_LIST (3)`). Named ranges are listed below the table. Inferred types describe the sample and nothing more — Google stores dates as numbers and formatting decides what they look like, so treat the output as evidence, not an authoritative schema. Empty headers, duplicate headers and mixed types come back as explicit warnings.
+
+#### `data:validate`: check sheet data against a TableSchema (read-only)
+
+```sh-session
+$ google-sheet data:validate -s <spreadsheetId> -t "Q3 Sales" \
+    --schema='{"fields":[{"name":"Name","type":"string","required":true},{"name":"Amount","type":"decimal","min":0},{"name":"Code","type":"string","unique":true}]}'
+```
+
+`--schema` takes the same TableSchema JSON that `report:run` templates use (fields typed `string|number|integer|decimal|boolean|date` with `required`/`min`/`max`/`enum`/`unique`); pass `--schemaFile <path>` (or `-` for stdin) instead of inline JSON. Every violation is reported with its sheet row, A1 coordinate, field, stable code and message: `MISSING_HEADER`/`DUPLICATE_HEADER` for layout problems, report codes such as `MISSING_REQUIRED_FIELD`, `ENUM_VIOLATION`, `MIN_VALUE_VIOLATION` or `NOT_AN_INTEGER` for data, and `DUPLICATE_VALUE` for `unique` fields. Invalid data exits 1 with error code `DATA_INVALID`; a malformed schema fails with `SCHEMA_INVALID` before any request leaves the process. Nothing is ever written.
+
+Validation uses the same sample bounds as `data:schema` (default rows 1–100, columns A–Z), so a passing result does not certify rows outside that range. Uniqueness violations are collected even when other rows have type or required-field errors.
+
+#### `data:clear`: values-only clear of a bounded range
+
+```sh-session
+$ google-sheet data:clear -s <spreadsheetId> -t "Scratch" --range "Scratch!A2:D20" --dryRun
+$ google-sheet data:clear -s <spreadsheetId> -t "Scratch" --range "Scratch!A2:D20"
+```
+
+The range must be bounded on both axes — open-ended ranges like `A2:D` are refused. Clearing is values-only: number formats and every other cell property survive (one native values-clear call after the guard). Formula cells refuse the clear unless `--overwriteFormulas` is passed. `--dryRun` reports how many cells would be cleared — and which formula cells would refuse — with zero writes.
+
+#### `data:upsert`: update matching rows, append new ones, keyed by one column
+
+```sh-session
+$ google-sheet data:upsert -s <spreadsheetId> -t "Expenses" --key=id '[["id", "category", "amount"], ["001", "Hardware", 1450], ["002", "Software", 299]]'
+$ cat new-rows.csv | google-sheet data:upsert -s <spreadsheetId> -t "Expenses" --key=id -i - --inputFormat csv
+$ google-sheet data:upsert -s <spreadsheetId> -t "Expenses" --key=id --range "Expenses!A1:F100" --dryRun -i rows.json
+```
+
+Input is header-first: the first input row names the columns and must match sheet headers. Existing keys update only the cells the input supplies — columns absent from the input keep their values and formulas untouched — and new keys append below the table. The semantics an agent should rely on:
+
+- `--key` names exactly one key column; keys are typed, so the string `"001"` keeps its leading zero and never matches the number `1`. Empty and duplicate keys are rejected.
+- Writes go out as `RAW` by default; `--valueInputOption USER_ENTERED` opts into Google's parsing.
+- If `--range` bounds the table but populated cells continue beyond it, the upsert refuses before writing instead of silently missing rows.
+- Formula cells this run would change are protected; `--overwriteFormulas` overrides.
+- `--dryRun` reports added/updated/unchanged rows and the planned write ranges with zero mutations.
+- Single-writer semantics only: re-running the same input does not duplicate rows, but the read-modify-write is not a transaction, there is no automatic retry after an ambiguous failure, and concurrent upserts against one sheet are unsupported.
+
+#### `spreadsheet:copy` / `worksheet:copy`: duplicate a spreadsheet or a sheet
+
+```sh-session
+$ google-sheet spreadsheet:copy -s <spreadsheetId> --title "Archive 2026-09"
+$ google-sheet worksheet:copy -s <spreadsheetId> -t "Template" --destinationSpreadsheetId <destId>
+```
+
+`spreadsheet:copy` leaves the source untouched and returns the new spreadsheet's server-assigned id and title. The CLI does not replay source sharing grants; inspect the copy's effective permissions before sharing sensitive data. `worksheet:copy` copies one worksheet into an explicit destination spreadsheet and returns the server-assigned title and new sheet id; an existing destination title does not require removing or renaming that sheet first.
+
+#### `spreadsheet:export`: PDF/XLSX to a local file
+
+```sh-session
+$ google-sheet spreadsheet:export -s <spreadsheetId> --format pdf --output ./report.pdf
+$ google-sheet spreadsheet:export -s <spreadsheetId> --format xlsx -o ./report.xlsx --overwrite
+```
+
+Binary-safe and atomic: the bytes are written to a temporary file in the output directory and renamed into place, so a failure leaves no partial file and preserves any existing output. An existing file is only replaced with explicit `--overwrite` (refused before the network round-trip, re-checked after the bytes arrive). Two Drive-side limits apply: exports are capped at 10 MB — larger spreadsheets fail with Google's own error — and access stays within the `drive.file` scope, meaning only files this app created or has opened are reachable, never the whole Drive.
+
+### Structured JSON Errors for Agents
+
+Any command can report failures as exactly one machine-readable envelope on stderr with exit code 1:
+
+```sh-session
+$ google-sheet data:get -s <spreadsheetId> --json
+{"error":{"code":"USAGE","message":"...","retryable":false}}
+```
+
+- `--json`/`-j` turns on failure envelopes only — success output is unchanged. `--rawOutput`/`-r` prints success output as JSON too.
+- `code` is stable: `USAGE` (bad argv), `AUTH_REQUIRED`/`UNAUTHORIZED`/`FORBIDDEN` (auth), `NOT_FOUND`, `CONFLICT`, `REQUEST_INVALID` (request rejected), `RATE_LIMITED`, `UPSTREAM`, `NETWORK` (retryable — `RATE_LIMITED` carries `retryAfterMs` when Google sends a hint), `VALIDATION`, `SCHEMA_INVALID`, `DATA_INVALID` (data contracts), `INTERNAL`.
+- Coordinate-linked `issues` (`row`/`column`/`a1`/`field`/`code`/`message`/`value`) ride along on the envelope for `data:validate` violations and upsert rejections.
+- Envelopes never contain credentials, request/response internals or arbitrary error objects; retry only what reports `retryable: true`, and never replay an ambiguous write without checking state first.
+- Errors raised before a command class loads, such as an unknown command or topic, still use oclif's human-readable output.
 
 ### Local Excel (XLSX) Workbooks: Inspect, Read, and Safe Write
 
@@ -550,7 +632,7 @@ To guarantee reliability and prevent data corruption in automated pipelines, the
 
 ## Using with coding agents
 
-google-sheet-cli is built to be driven by coding agents: `workbook:*` and local `report:run` run with zero credentials and zero network calls, every command emits machine-readable output (`--rawOutput`/`-r`, `--csv`), and writes fail closed — formulas are never overwritten without an explicit `--overwriteFormulas`, and `--dryRun` previews any mutation with zero side effects.
+google-sheet-cli is built to be driven by coding agents: `workbook:*` and local `report:run` run with zero credentials and zero network calls, every command emits machine-readable output (`--rawOutput`/`-r`, `--csv`), and writes fail closed — formulas are never overwritten without an explicit `--overwriteFormulas`, and `--dryRun` previews any mutation with zero side effects. Failures are programmatically consumable too: `--json`/`-j` reports any failure as one structured envelope on stderr (stable `code`, safe `message`, `retryable`, coordinate-linked `issues`, exit code 1) while leaving success output unchanged — pair it with `--rawOutput`/`-r` when the agent wants success output as JSON as well. See [Structured JSON Errors for Agents](#structured-json-errors-for-agents).
 
 The repository ships an agent skill and an integration guide:
 
