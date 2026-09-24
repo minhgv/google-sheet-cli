@@ -13,8 +13,8 @@ Generate and publish business reports (finance, manpower, table) from JSON/CSV/X
 USAGE
   $ google-sheet report:run --template <value> [-h] [-r] [-i <value>] [--inputFormat json|csv] [--sourceWorkbook
     <value>] [--sourceSpreadsheet <value>] [--ranges <value>] [-o <value>] [-s <value>] [--workbookTemplate <value>]
-    [--allowCachedFormulaValues] [--dryRun] [--overwrite] [--overwriteFormulas] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>]
+    [--allowCachedFormulaValues] [--dryRun] [--overwrite] [--overwriteFormulas] [--discardUnsupported] [-c <value>] [-p
+    <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                       Show CLI help.
@@ -24,6 +24,8 @@ FLAGS
   -s, --spreadsheetId=<value>      ID of target Google Spreadsheet to write report into
       --allowCachedFormulaValues   Explicitly allow using cached formula values from source workbook (required when
                                    source contains formulas)
+      --discardUnsupported         Allow saving a workbook whose unsupported features (charts, pivot tables, macros)
+                                   would be dropped by the local engine
       --dryRun                     Preview report generation without writing to disk or Google Sheets
       --inputFormat=<option>       Format of input file ("json" or "csv")
                                    <options: json|csv>

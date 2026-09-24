@@ -80,6 +80,16 @@ export interface FakeSpreadsheet {
   namedRanges?: FakeNamedRange[];
 }
 
+/** One Drive file the fake's files.list endpoint serves. */
+export interface FakeDriveFile {
+  id: string;
+  name: string;
+  /** defaults to the Google Sheets mime type, which is what discovery filters for */
+  mimeType?: string;
+  /** RFC 3339 timestamp as Drive reports it */
+  modifiedTime?: string;
+}
+
 export interface RecordedRequest {
   method: string;
   url: string;
@@ -293,6 +303,10 @@ const QUOTA_REJECTION: FakeResponse = {
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 export { XLSX_MIME_TYPE };
 
+/** The Google Sheets mime type discovery (files.list q=mimeType=...) filters for. */
+const SPREADSHEET_MIME_TYPE = 'application/vnd.google-apps.spreadsheet';
+export { SPREADSHEET_MIME_TYPE };
+
 /** The export formats the fake serves; the live Drive API allows more, the CLI offers these two. */
 const EXPORT_MIME_TYPES: Record<string, true> = {
   'application/pdf': true,
@@ -317,6 +331,37 @@ const fakeExportBytes = (spreadsheetId: string, mimeType: string): Buffer => {
 };
 export { fakeExportBytes };
 
+/**
+ * Parse the subset of the Drive query language the CLI emits: clauses of
+ * `field='literal'` or `field contains 'literal'` joined by ` and `. Parsing is contiguous
+ * (sticky regex), so a literal that itself contains " and " — a title like
+ * `Salt and Pepper` — stays inside its quotes, and Drive's escapes (`\'`, `\\`) are
+ * unfolded. Returns undefined for anything the grammar does not cover. Numbered groups only:
+ * the repo targets es2017, where named capture groups are a compile error.
+ */
+const parseDriveQuery = (q: string): { field: string; op?: string; literal: string }[] | undefined => {
+  const clause = /(\w+)(?:\s+(contains)\s*|\s*=\s*)'((?:[^'\\]|\\.)*)'/y;
+  const clauses: { field: string; op?: string; literal: string }[] = [];
+  let index = 0;
+  while (index < q.length) {
+    if (clauses.length > 0) {
+      if (!q.startsWith(' and ', index)) return undefined;
+      index += ' and '.length;
+    }
+    clause.lastIndex = index;
+    const match = clause.exec(q);
+    if (!match) return undefined;
+    const [, field, op, escaped] = match;
+    clauses.push({
+      field,
+      ...(op ? { op } : {}),
+      literal: escaped.replace(/\\(.)/g, '$1'),
+    });
+    index = clause.lastIndex;
+  }
+  return clauses;
+};
+
 export class FakeSheets {
   readonly spreadsheets = new Map<string, FakeSpreadsheet>();
   readonly requests: RecordedRequest[] = [];
@@ -331,6 +376,8 @@ export class FakeSheets {
   private failureQueue: { pathPart: string; status: number; times: number }[] = [];
   /** Drive permissions keyed by fileId */
   private permissions = new Map<string, { id: string; type: string; role: string; emailAddress?: string; domain?: string }[]>();
+  /** Drive files listable through files.list, keyed by fileId; a Map keeps insertion order so pagination is deterministic */
+  private driveFiles = new Map<string, FakeDriveFile>();
   private originalHttpsRequest?: Function;
   private originalHttpRequest?: Function;
 
@@ -384,6 +431,7 @@ export class FakeSheets {
     this.quotaRejectionsLeft = 0;
     this.failureQueue.length = 0;
     this.permissions.clear();
+    this.driveFiles.clear();
     this.nextPermissionId = 1;
     this.nextCopyId = 1;
   }
@@ -443,6 +491,23 @@ export class FakeSheets {
     });
     this.spreadsheets.set(spreadsheetId, spreadsheet);
     return spreadsheet;
+  }
+
+  /**
+   * Seed one Drive file into the files.list universe. Only seeded files are listable — the
+   * fake does not derive the listing from the spreadsheets map, so a test states exactly the
+   * universe Drive would have shown under drive.file. mimeType defaults to the Google Sheets
+   * mime, which is what discovery filters for. Seeding the same id twice replaces the entry
+   * in place, keeping its original position for pagination.
+   *
+   * @param {FakeDriveFile} file - id, name and optional mimeType/modifiedTime of the file
+   * @returns {void}
+   * @memberof FakeSheets
+   */
+  seedDriveFile(file: FakeDriveFile): void {
+    // Map.set over an existing key keeps that key's original position, so re-seeding never
+    // disturbs pagination order.
+    this.driveFiles.set(file.id, { ...file, mimeType: file.mimeType ?? SPREADSHEET_MIME_TYPE });
   }
 
   /**
@@ -664,6 +729,8 @@ export class FakeSheets {
   private driveHandle(method: string, parsed: URL, body: any): FakeResponse {
     const path = decodeURIComponent(parsed.pathname);
 
+    if (method === 'GET' && path === '/drive/v3/files') return this.driveFilesList(parsed);
+
     const create = path.match(/^\/drive\/v3\/files\/([^/]+)\/permissions$/);
     if (method === 'POST' && create) {
       const fileId = create[1];
@@ -712,6 +779,53 @@ export class FakeSheets {
     }
 
     return { status: 404, body: { error: { code: 404, message: `Unhandled Drive ${method} ${path}`, status: 'NOT_FOUND' } } };
+  }
+
+  /**
+   * Drive v3 files.list against the seeded driveFiles universe, in insertion order.
+   *
+   * Parses exactly the query grammar the CLI emits: a `mimeType='...'` equality clause,
+   * optionally `and`-ed with a `name='...'` or `name contains '...'` clause whose literal may
+   * carry Drive escapes (`\'`, `\\`). Pagination uses a numeric offset as the opaque
+   * pageToken, mirroring how a caller must treat Google's own tokens. `spaces`, `fields` and
+   * `orderBy` are accepted and ignored; insertion order is the stable answer.
+   */
+  private driveFilesList(parsed: URL): FakeResponse {
+    const q = parsed.searchParams.get('q') ?? '';
+    const pageSize = Number(parsed.searchParams.get('pageSize') ?? '100');
+    const pageToken = parsed.searchParams.get('pageToken');
+    const offset = Number(pageToken ?? '0');
+    if (!Number.isInteger(offset) || offset < 0) return this.badRequest(`Invalid pageToken "${pageToken}".`);
+    if (!Number.isFinite(pageSize) || pageSize < 1) return this.badRequest(`Invalid pageSize "${parsed.searchParams.get('pageSize')}".`);
+
+    const clauses = parseDriveQuery(q);
+    if (!clauses) return this.badRequest(`Unhandled query "${q}".`);
+
+    let files = [...this.driveFiles.values()];
+    for (const { field, op, literal } of clauses) {
+      if (field === 'mimeType') {
+        if (op) return this.badRequest(`Unhandled operator "${op}" for field "${field}".`);
+        files = files.filter((file) => file.mimeType === literal);
+      } else if (field === 'name') {
+        files = op === 'contains' ? files.filter((file) => file.name.includes(literal)) : files.filter((file) => file.name === literal);
+      } else {
+        return this.badRequest(`Unhandled query field "${field}".`);
+      }
+    }
+
+    const page = files.slice(offset, offset + pageSize);
+    return {
+      status: 200,
+      body: {
+        files: page.map(({ id, name, mimeType, modifiedTime }) => ({
+          id,
+          name,
+          mimeType,
+          ...(modifiedTime ? { modifiedTime } : {}),
+        })),
+        ...(offset + pageSize < files.length ? { nextPageToken: String(offset + pageSize) } : {}),
+      },
+    };
   }
 
   /**

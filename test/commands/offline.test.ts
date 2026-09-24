@@ -367,6 +367,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--range=<value> (required) A1 range to clear',
       '--dryRun',
       '--overwriteFormulas',
@@ -440,7 +444,7 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
   {
     id: 'workbook:inspect',
     usage: '$ google-sheet workbook:inspect -f <value> [-h] [-r]',
-    expected: ['-f, --file=<value> (required) Path to the local XLSX file to inspect'],
+    expected: ['-f, --file=<value> (required) Path to the local XLSX file to inspect', '--includeFormulaCells'],
     skipAuthFlags: true,
   },
   {
@@ -472,6 +476,27 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--dryRun Preview changes without modifying or saving files',
       '--overwrite Allow overwriting existing destination output file',
       '--overwriteFormulas Allow overwriting existing formula cells in the workbook',
+      '--cells=<value>',
+      '--discardUnsupported',
+    ],
+    skipAuthFlags: true,
+  },
+  {
+    id: 'workbook:find',
+    usage: '$ google-sheet workbook:find -f <value> --equals <value> [-h] [-r]',
+    expected: [
+      '-f, --file=<value> (required) Path to the local XLSX file to scan',
+      '-t, --worksheetTitle=<value>',
+      '--range=<value>',
+      '--equals=<value>',
+      '--contains=<value>',
+      '--regex=<value>',
+      '--column=<value>',
+      '--header=<value>',
+      '--ignoreCase',
+      '--limit=<value> [default: 100]',
+      '--first',
+      '--byRow',
     ],
     skipAuthFlags: true,
   },
@@ -493,6 +518,7 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--dryRun',
       '--overwrite',
       '--overwriteFormulas',
+      '--discardUnsupported',
     ],
     skipAuthFlags: true,
   },
@@ -514,6 +540,20 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--limit=<value> [default: 100]',
       '--first',
       '--byRow',
+    ],
+  },
+  {
+    id: 'data:export-csv',
+    usage: '$ google-sheet data:export-csv -s <value> -t <value> [-o <value>] [-h] [-r] [-j]',
+    expected: [
+      '-s, --spreadsheetId=<value> [env: SPREADSHEET_ID] ID of the spreadsheet to export (Google Sheets source)',
+      '-t, --worksheetTitle=<value> [env: WORKSHEET_TITLE] Title of the worksheet to export (Google Sheets source)',
+      '--range=<value>',
+      '--workbook=<value>',
+      '--mode=<option> [default: raw]',
+      '--injection=<option> [default: safe]',
+      '-o, --output=<value>',
+      '--overwrite',
     ],
   },
   {
@@ -553,6 +593,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--range=<value> (required)',
       '--type=<option> [default: MERGE_ALL]',
       '<options: MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS>',
@@ -566,11 +610,16 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--dimension=<option> (required)',
       '<options: ROWS|COLUMNS>',
       '--start=<value> (required)',
       '--count=<value> [default: 1]',
       '--inheritFromBefore',
+      '--force',
       '--dryRun',
     ],
   },
@@ -580,9 +629,14 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--dimension=<option> (required)',
       '--start=<value> (required)',
       '--count=<value> [default: 1]',
+      '--force',
       '--dryRun',
     ],
   },
@@ -667,6 +721,17 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     ],
   },
   {
+    id: 'spreadsheet:list',
+    usage: '$ google-sheet spreadsheet:list [--name <value>] [--pageSize <value>] [-h] [-r]',
+    expected: [
+      '--name=<value>',
+      '--exact',
+      '--pageSize=<value>',
+      '--pageToken=<value>',
+      '--all',
+    ],
+  },
+  {
     id: 'worksheet:copy',
     usage: '$ google-sheet worksheet:copy -t <value> -s <value> --destinationSpreadsheetId <value> [-h] [-r] [-j]',
     expected: [
@@ -675,10 +740,18 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '--destinationSpreadsheetId=<value> (required) ID of the spreadsheet to copy the worksheet into',
     ],
   },
+  {
+    id: 'capabilities',
+    usage: '$ google-sheet capabilities',
+    expected: [],
+    // extends plain @oclif/core Command on purpose: credential-free by design, so no auth
+    // flags and no shared -r/-j output flags to pin
+    skipAuthFlags: true,
+  },
 ];
 
 /** The env every flag with an `env:` binding reads, so the suite is the same run to run. */
-const MANAGED_ENV = ['GSHEET_CLIENT_EMAIL', 'GSHEET_PRIVATE_KEY', 'GSHEET_CREDENTIALS_FILE', 'SPREADSHEET_ID', 'WORKSHEET_TITLE', 'VALUE_INPUT_OPTION'];
+const MANAGED_ENV = ['GSHEET_CLIENT_EMAIL', 'GSHEET_PRIVATE_KEY', 'GSHEET_CREDENTIALS_FILE', 'SPREADSHEET_ID', 'WORKSHEET_TITLE', 'VALUE_INPUT_OPTION', 'GSHEET_REDACTED', 'GSHEET_CONFIG_DIR'];
 
 describe('offline commands', () => {
   let stub: StubGoogleSheet;

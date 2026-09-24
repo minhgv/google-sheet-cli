@@ -638,13 +638,14 @@ describe('clearData and upsert', () => {
       expect(dupKey.code).to.equal('VALIDATION');
       expect(dupKey.message).to.match(/Duplicate key 7 in the input at rows 2 and 3/);
 
-      // a transport failure is not an input problem: it stays a plain error without the code
+      // a transport failure is not an input problem: it carries the transport classification
+      // (UPSTREAM for a 500) plus the structured mutation outcome, not VALIDATION
       fake.failRequests('values:batchUpdate', 500, 1);
       const transport = await rejection(() =>
         gsheet.upsert([['id', 'score'], ['001', 5]], { key: 'id', worksheetTitle: TITLE })
       );
       expect(transport.message).to.match(/Batch update failed at batch 1\/1/);
-      expect(transport.code).to.equal(undefined);
+      expect(transport.code).to.equal('UPSTREAM');
     });
   });
 });

@@ -10,6 +10,7 @@
  */
 
 import { Errors } from '@oclif/core';
+import { MutationOutcomeReport, SerializedMutationOutcome, serializeMutationOutcome } from './mutation-outcome';
 
 export const GSheetErrorCode = {
   /** argv could not be parsed (unknown flag, missing required flag, bad flag value) */
@@ -79,6 +80,18 @@ export interface GSheetErrorOptions {
   retryAfterMs?: number;
   /** structured, coordinate-linked details (e.g. data validation issues) */
   details?: { issues?: ErrorIssue[] };
+  /**
+   * Typed mutation-outcome report for multi-request write operations (see
+   * `./mutation-outcome`). Serialized into the envelope as a sanitized `error.mutation`
+   * block - states, ranges, counts, phase and retry guidance only, never cell contents.
+   */
+  mutationOutcome?: MutationOutcomeReport;
+  /**
+   * Message shown INSTEAD of `message` when redaction is enabled. Use when the full
+   * message embeds cell contents or formulas (e.g. formula-conflict refusals); keep
+   * coordinates and counts, drop the values. Ignored when redaction is off.
+   */
+  redactedMessage?: string;
   /** preserved on the Error for humans/debuggers; never serialized into the envelope */
   cause?: unknown;
 }
@@ -92,6 +105,8 @@ export class GSheetError extends Error {
   public readonly retryable: boolean;
   public readonly retryAfterMs?: number;
   public readonly details?: { issues?: ErrorIssue[] };
+  public readonly mutationOutcome?: MutationOutcomeReport;
+  public readonly redactedMessage?: string;
 
   constructor(code: GSheetErrorCodeValue, message: string, options: GSheetErrorOptions = {}) {
     // target is es2017, so the two-argument Error constructor (and its typed `cause`) is not
@@ -106,6 +121,8 @@ export class GSheetError extends Error {
     }
     if (options.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs;
     if (options.details !== undefined) this.details = options.details;
+    if (options.mutationOutcome !== undefined) this.mutationOutcome = options.mutationOutcome;
+    if (options.redactedMessage !== undefined) this.redactedMessage = options.redactedMessage;
   }
 }
 
@@ -236,6 +253,115 @@ export function sanitizeMessage(message: string): string {
   return safe;
 }
 
+/**
+ * Opt-in redacted-diagnostics mode. When enabled, every envelope and diagnostic this module
+ * emits keeps coordinates, counts, statuses and outcome states but drops cell contents,
+ * formulas, incoming values and `issues[].value` - applied before serialization, so nothing
+ * sensitive reaches stdout/stderr or a caller. It never strips anything extra from error
+ * messages themselves (those are already secret-scrubbed by `sanitizeMessage` and are the
+ * actionable part); it removes the structured value fields instead.
+ *
+ * Off by default: existing output shapes are byte-identical until a command turns it on via
+ * the shared `--redacted` flag (GSHEET_REDACTED). Unattended deployments should enable it.
+ */
+let redactionEnabled = false;
+
+/** Turn redacted-diagnostics mode on/off. Idempotent; commands call this in `init()`. */
+export function setRedactionEnabled(enabled: boolean): void {
+  redactionEnabled = enabled;
+}
+
+/** Whether redacted-diagnostics mode is currently on. */
+export function isRedactionEnabled(): boolean {
+  return redactionEnabled;
+}
+
+/**
+ * Keys whose values are data content or credentials, not structure. Matched case-insensitively
+ * on the exact key name after stripping `-`/`_` separators: only the bare names below and
+ * their snake/kebab spellings match - compound camelCase keys like `inputData` do not. Keep
+ * this list explicit; an over-broad match would redact structural fields (like `a1Ranges`)
+ * and an over-narrow one would leak content.
+ */
+const REDACTED_KEYS: Record<string, true> = {
+  value: true,
+  values: true,
+  data: true,
+  rows: true,
+  rowvalues: true,
+  cellvalues: true,
+  cellcontents: true,
+  formula: true,
+  formulas: true,
+  input: true,
+  inputs: true,
+  incoming: true,
+  incomingvalues: true,
+  content: true,
+  contents: true,
+  before: true,
+  after: true,
+  formulasoverwritten: true,
+  payload: true,
+  privatekey: true,
+  clientemail: true,
+  clientsecret: true,
+  accesstoken: true,
+  refreshtoken: true,
+  idtoken: true,
+  credentials: true,
+};
+
+const redactedKey = (key: string): string => key.replace(/[-_]/g, '').toLowerCase();
+
+/**
+ * Strip cell contents, formulas, incoming values and credential material from an arbitrary
+ * diagnostic object (dry-run payloads in later waves), returning a new object - the input is
+ * never mutated. Policy:
+ * - a key in `REDACTED_KEYS` keeps its place but loses its content: scalar values become
+ *   `'[REDACTED]'`, arrays keep their length with `null` elements (counts survive), and
+ *   nested objects are redacted recursively so shape stays inspectable;
+ * - every string that survives is run through `sanitizeMessage`, so the shared secret
+ *   patterns (private keys, JWTs, bearer and access tokens) scrub prose too;
+ * - structural fields (coordinates, codes, counts, states, messages) pass through untouched;
+ * - cyclic references are cut, not crashed on.
+ *
+ * The generic signature preserves the caller's payload type at the public boundary; the
+ * recursion itself walks an `unknown` tree so every access is runtime-narrowed.
+ */
+export function redactDiagnostic<T>(value: T, seen: WeakSet<object> = new WeakSet()): T {
+  // public API boundary: the recursion below validates by typeof/in narrowing, not by cast
+  return redactDiagnosticValue(value, seen) as T;
+}
+
+function redactDiagnosticValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return sanitizeMessage(value);
+  if (typeof value !== 'object' || value === null) return value;
+  if (seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((element) => redactDiagnosticValue(element, seen));
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (REDACTED_KEYS[redactedKey(key)]) {
+      if (Array.isArray(inner)) {
+        // keep the count, drop the content
+        result[key] = inner.map(() => null);
+      } else if (inner !== null && typeof inner === 'object') {
+        result[key] = redactDiagnosticValue(inner, seen);
+      } else if (inner === undefined) {
+        continue;
+      } else {
+        result[key] = '[REDACTED]';
+      }
+      continue;
+    }
+    result[key] = redactDiagnosticValue(inner, seen);
+  }
+  return result;
+}
+
 const sanitizeIssueValue = (value: unknown): ErrorIssue['value'] => {
   if (value === null) return null;
   if (typeof value === 'string') return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}...` : value;
@@ -250,6 +376,8 @@ const sanitizeIssue = (issue: ErrorIssue): ErrorIssue => {
   if (issue.a1 !== undefined) safe.a1 = issue.a1;
   if (issue.field !== undefined) safe.field = issue.field;
   if (issue.code !== undefined) safe.code = issue.code;
+  // redacted mode keeps the issue's coordinates and code but not the offending value
+  if (redactionEnabled) return safe;
   const value = sanitizeIssueValue(issue.value);
   if (value !== undefined) safe.value = value;
   return safe;
@@ -263,27 +391,57 @@ export interface GSheetErrorEnvelope {
     retryable: boolean;
     retryAfterMs?: number;
     issues?: ErrorIssue[];
+    /**
+     * Sanitized mutation-outcome block, present only when the thrown `GSheetError` carries a
+     * `mutationOutcome`. States, ranges, counts, phase and retry guidance only - never cell
+     * values or formulas. In redacted mode the prose fields (`causeSummary`,
+     * `gridGrowth.details`) are dropped too; coordinates/counts/states stay.
+     */
+    mutation?: SerializedMutationOutcome;
   };
 }
 
 /**
  * The central serializer. Builds the envelope from stable metadata and a sanitized message
  * only - causes, request internals and arbitrary error properties never pass through. Issues
- * are carried solely from a `GSheetError`'s own details.
+ * are carried solely from a `GSheetError`'s own details, and the mutation block solely from a
+ * `GSheetError`'s own `mutationOutcome`, projected through `serializeMutationOutcome` (which
+ * honors the redaction mode). The `cause` is non-enumerable on `GSheetError` and is never
+ * read here, so nested causes - redacted or not - cannot leak into the envelope.
  */
 export function toErrorEnvelope(err: unknown): GSheetErrorEnvelope {
   const meta = classifyError(err);
-  const rawMessage = err instanceof Error ? err.message : typeof (err as { message?: unknown })?.message === 'string' ? (err as { message: string }).message : '';
+  const rawMessage = err instanceof Error
+    ? err.message
+    : err !== null && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
+      ? err.message
+      : '';
   const envelope: GSheetErrorEnvelope = {
     error: {
       code: meta.code,
-      message: rawMessage ? sanitizeMessage(rawMessage) : 'Unexpected error',
+      message: rawMessage
+        ? sanitizeMessage(
+            redactionEnabled &&
+              err !== null &&
+              typeof err === 'object' &&
+              'redactedMessage' in err &&
+              typeof (err as { redactedMessage?: unknown }).redactedMessage === 'string'
+              ? (err as { redactedMessage: string }).redactedMessage
+              : rawMessage
+          )
+        : 'Unexpected error',
       retryable: meta.retryable,
     },
   };
   if (meta.retryAfterMs !== undefined) envelope.error.retryAfterMs = meta.retryAfterMs;
   if (err instanceof GSheetError && err.details?.issues?.length) {
     envelope.error.issues = err.details.issues.map(sanitizeIssue);
+  }
+  if (err instanceof GSheetError && err.mutationOutcome !== undefined) {
+    envelope.error.mutation = serializeMutationOutcome(err.mutationOutcome, {
+      redacted: redactionEnabled,
+      sanitize: sanitizeMessage,
+    });
   }
   return envelope;
 }

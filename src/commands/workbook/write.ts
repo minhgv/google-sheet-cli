@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import { Command, Flags, Args } from '@oclif/core';
 import { parseRangesFlag, validate2DMatrix } from '../../lib/cli-input';
 import { parseInput, parseJsonSafely, readInput } from '../../lib/report/input';
-import { ReportDocument } from '../../lib/report/types';
+import { ReportCell, ReportDocument } from '../../lib/report/types';
 import { XlsxWorkbook } from '../../lib/xlsx';
 
 export default class WorkbookWrite extends Command {
@@ -70,6 +70,17 @@ export default class WorkbookWrite extends Command {
       default: false,
       required: false,
     }),
+    cells: Flags.string({
+      description:
+        'Sparse cell writes as JSON: {"B5":"value","J8":"GD_WEB1"} or [{"a1":"B5","value":"x"}]. Each entry writes exactly one cell; every other cell is untouched. Mutually exclusive with positional data and --input',
+      required: false,
+    }),
+    discardUnsupported: Flags.boolean({
+      description:
+        'Allow saving a workbook whose unsupported features (charts, pivot tables, macros) would be dropped by the local engine',
+      default: false,
+      required: false,
+    }),
     rawOutput: Flags.boolean({
       char: 'r',
       description: 'Get the raw output as a JSON string',
@@ -102,6 +113,8 @@ export default class WorkbookWrite extends Command {
         dryRun,
         overwrite,
         overwriteFormulas,
+        cells,
+        discardUnsupported,
         rawOutput,
       },
     } = await this.parse(WorkbookWrite);
@@ -128,12 +141,54 @@ export default class WorkbookWrite extends Command {
     }
 
     // Validate mutually exclusive input sources
+    const hasCells = cells !== undefined && cells !== '';
     if (data !== undefined && data !== '' && input !== undefined && input !== '') {
       throw new Error('Mutually exclusive input sources: specify either positional data argument or --input flag, not both');
     }
-    if ((data === undefined || data === '') && (input === undefined || input === '')) {
-      throw new Error('No data provided. Specify either positional data argument or --input flag');
+    if (!hasCells && (data === undefined || data === '') && (input === undefined || input === '')) {
+      throw new Error('No data provided. Specify either positional data argument, --input flag, or --cells');
     }
+    // Sparse --cells mode: a cell-addressed write, not a range/document write.
+    if (hasCells) {
+      if ((data !== undefined && data !== '') || (input !== undefined && input !== '')) {
+        throw new Error('--cells is mutually exclusive with the positional data argument and --input');
+      }
+      const workbook = file ? await XlsxWorkbook.load(file) : XlsxWorkbook.create();
+      const entries = this.parseCellsFlag(cells);
+      const setResult = workbook.setCells(entries, {
+        worksheetTitle,
+        overwriteFormulas,
+        dryRun,
+      });
+
+      let cellsSave = undefined;
+      if (!dryRun && destination) {
+        cellsSave = await workbook.save(destination, {
+          overwrite,
+          inPlace,
+          allowUnsupportedFeatures: discardUnsupported,
+        });
+      }
+
+      const cellsReceipt = {
+        operation: this.id,
+        destination: destination || 'dry-run',
+        dryRun,
+        appliedChanges: setResult.applied,
+        totalConflicts: setResult.conflicts.length,
+        changes: setResult.changes,
+        saved: cellsSave,
+      };
+      if (rawOutput) {
+        this.log(JSON.stringify(cellsReceipt, null, 2));
+      } else if (dryRun) {
+        this.log(`Sparse write preview (dry run): ${setResult.changes.length} cell(s) would be written, ${setResult.conflicts.length} conflict(s)`);
+      } else {
+        this.log(`Successfully wrote ${setResult.applied} cell(s) to "${cellsSave?.savedPath ?? destination}"`);
+      }
+      return cellsReceipt;
+    }
+
     // Resolve input payload
     let rawInput: unknown;
     if (data !== undefined && data !== '') {
@@ -195,6 +250,7 @@ export default class WorkbookWrite extends Command {
       saveResult = await workbook.save(destination, {
         overwrite,
         inPlace,
+        allowUnsupportedFeatures: discardUnsupported,
       });
     }
 
@@ -277,6 +333,39 @@ export default class WorkbookWrite extends Command {
     throw new Error(
       'Input data must be either a 2D array [[...]] or a valid ReportDocument object ({ sheets: [...], provenance: {...} })'
     );
+  }
+
+  /**
+   * Parses --cells into {a1, value} entries. Accepts either an address-keyed
+   * object ({"B5":"x"}) or a list ([{"a1":"B5","value":"x"}]).
+   */
+  private parseCellsFlag(raw: string): { a1: string; value: ReportCell }[] {
+    let parsed: unknown;
+    try {
+      parsed = parseJsonSafely(raw);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`--cells has to be valid JSON (${msg})`);
+    }
+
+    if (Array.isArray(parsed)) {
+      return parsed.map((entry, i) => {
+        if (!entry || typeof entry !== 'object' || typeof (entry as { a1?: unknown }).a1 !== 'string') {
+          throw new Error(`--cells entry at index ${i} must be an object with an "a1" string and a "value".`);
+        }
+        const e = entry as { a1: string; value?: unknown };
+        return { a1: e.a1, value: (e.value ?? null) as ReportCell };
+      });
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      return Object.entries(parsed as Record<string, unknown>).map(([a1, value]) => ({
+        a1,
+        value: (value ?? null) as ReportCell,
+      }));
+    }
+
+    throw new Error('--cells must be a JSON object {"A1": value} or an array [{"a1":"A1","value":...}]');
   }
 }
 

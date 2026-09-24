@@ -1,6 +1,6 @@
 ---
 name: google-sheet
-description: Read, write, and manage Google Sheets AND local Excel (.xlsx) files from the terminal using the google-sheet-cli oclif CLI. Supports OAuth 2.0 user auth and Service Account JWT for cloud, plus fully-offline XLSX inspect/read/write, declarative report automation (finance cash-flow, manpower estimation) from templates, cell formatting (borders, bold, colors, number formats, merge), and cell search returning A1 coordinates. Use when the user asks to read/update a Google Sheet, batch-read ranges, append table rows, create spreadsheets, work with a docs.google.com/spreadsheets URL, inspect or edit a local .xlsx, generate a report from CSV/JSON via a template, find a cell/row by value, or format a sheet for a pretty report, upsert rows keyed by a column, discover or validate a sheet's schema, duplicate a spreadsheet or worksheet, or export a spreadsheet to PDF/XLSX. Trigger on "đọc sheet", "google sheet", "spreadsheet", "xlsx", "excel", "report", "báo cáo", "data:get", "data:find", "data:upsert", "data:validate", "format:cells", "gsheet", "spreadsheet:export", or a Google Sheets URL.
+description: Read, write, and manage Google Sheets AND local Excel (.xlsx) files from the terminal using the google-sheet-cli oclif CLI. Supports OAuth 2.0 user auth and Service Account JWT for cloud, plus fully-offline XLSX inspect/read/write, declarative report automation (finance cash-flow, manpower estimation) from templates, cell formatting (borders, bold, colors, number formats, merge), and cell search returning A1 coordinates. Use when the user asks to read/update a Google Sheet, batch-read ranges, append table rows, create spreadsheets, work with a docs.google.com/spreadsheets URL, inspect or edit a local .xlsx, generate a report from CSV/JSON via a template, find a cell/row by value, or format a sheet for a pretty report, upsert rows keyed by a column, discover or validate a sheet's schema, duplicate a spreadsheet or worksheet, or export a spreadsheet to PDF/XLSX. Trigger on "đọc sheet", "google sheet", "spreadsheet", "xlsx", "excel", "report", "báo cáo", "data:get", "data:find", "data:upsert", "data:validate", "format:cells", "gsheet", "spreadsheet:export", "data:export-csv", "spreadsheet:list", "capabilities", "export csv", "list spreadsheets", or a Google Sheets URL.
 ---
 
 # google-sheet-cli
@@ -24,6 +24,7 @@ Auth resolution: OAuth is used automatically when `--useOauth` is set OR no serv
 
 - `auth:status` — check token validity. `auth:logout` — delete cached tokens.
 - OAuth client secret expected at `~/.config/google-sheet-cli/client_secret.json`; override with `--clientSecretFile`.
+- Config dir override: `GSHEET_CONFIG_DIR` relocates the whole `~/.config/google-sheet-cli` directory (token.json + client_secret.json) — for tests and sandboxed runs; never point it at a shared path. Tokens are written atomically at mode 0600, dir 0700.
 - Advanced Protection Program accounts CANNOT consent to unverified OAuth apps — use a secondary account or service account.
 - **Local-only commands (`workbook:*`, `report:run` with only local input/output) need NO auth and make NO network calls.** Auth initializes only when `--sourceSpreadsheet` or `--spreadsheetId` is used.
 
@@ -52,6 +53,9 @@ data:clear        -s <id> -t <title> --range 'Sheet1!A2:D20' [--dryRun] [--overw
                   values-only clear of a bounded range; formulas refuse without --overwriteFormulas
 data:upsert       -s <id> -t <title> --key <column> (-d '<json rows>'|-i <file|->) [--inputFormat json|csv]
                   [--range 'Sheet1!A1:F100'] [--valueInputOption] [--dryRun] [--overwriteFormulas]
+data:export-csv   (-s <id> -t <title> [--range A1:B10] | --workbook <f.xlsx> --range 'Sheet1!A1:D10')
+                  [--mode raw|formatted|formula] [--injection safe|preserve] [-o out.csv] [--overwrite]
+                  RFC 4180 CSV from either backend; -o = atomic write + receipt, omit = bytes on stdout
 spreadsheet:copy  -s <id> [--title <name>]   Drive copy; source untouched; sharing NOT cloned
 spreadsheet:export -s <id> --format pdf|xlsx -o <file> [--overwrite]   atomic write; Drive 10 MB cap
 worksheet:copy    -s <id> -t <title> --destinationSpreadsheetId <destId>   server assigns title on collision
@@ -73,15 +77,35 @@ spreadsheet:permissions -s <id> [--rawOutput]
 spreadsheet:unshare -s <id> (--permissionId <id>|--email <addr>)
 spreadsheet:add   --spreadsheetTitle <name>
 spreadsheet:get   -s <id> [--rawOutput]
+spreadsheet:list  [--name <fragment>] [--exact] [--pageSize N] [--pageToken <t>|--all] [--rawOutput]
+                  drive.file scope: app-created/opened only; empty ≠ absent; never auto-selects an id
 worksheet:add|get|remove -s <id> -t <title>
 worksheet:rename  -s <id> -t <old> -n <new>
 
 # Local XLSX (offline, no auth, no network)
-workbook:inspect  -f <file.xlsx>
+workbook:inspect  -f <file.xlsx> [--includeFormulaCells]
+                  per-sheet merged ranges, formula counts, frozen panes, validations, cond-formatting
 workbook:read     -f <file.xlsx> --range 'Sheet1!A1:E20' [--mode unformatted|formatted|formula]
+workbook:find     -f <file.xlsx> [-t <sheet>] (--equals|--contains|--regex <v>) [--range A1:Z100]
+                  [--column B | --header "Status"] [--ignoreCase|--no-ignoreCase]
+                  [--limit N|--first] [--byRow] → same match JSON shape as data:find
 workbook:write    [-f template.xlsx] [-o out.xlsx] -i <data.csv|json|-> [-t Sheet1] [--startCell A1]
-                  [--inPlace] [--dryRun] [--overwrite] [--overwriteFormulas] [-r]
+                  [--inPlace] [--dryRun] [--overwrite] [--overwriteFormulas] [--discardUnsupported] [-r]
                   (or pass data as positional JSON 2D array / ReportDocument)
+                  --cells '{"B5":"x","J8":"GD_WEB1"}' sparse per-cell write; every other cell untouched
+
+# Dual-backend mutations: --workbook <f.xlsx> instead of -s <id>; -t selects the sheet inside
+# the file; result lands on --output <path> or --inPlace (.bak backup), never implicitly on the
+# source; --dryRun previews without saving; --discardUnsupported consents to dropping
+# charts/pivots/macros the engine cannot preserve
+grid:insert       --workbook <f.xlsx> -t <sheet> --dimension ROWS|COLUMNS --start N [--count N]
+                  [--inheritFromBefore] [--force] (--inPlace|-o <out.xlsx>|--dryRun)
+grid:delete       --workbook <f.xlsx> -t <sheet> --dimension ROWS|COLUMNS --start N [--count N]
+                  [--force] (--inPlace|-o <out.xlsx>|--dryRun)   dryRun lists removed values
+format:merge      --workbook <f.xlsx> -t <sheet> --range A1:J1
+                  [--type MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS|--unmerge] (--inPlace|-o|--dryRun)
+data:clear        --workbook <f.xlsx> --range 'Sheet1!A2:D20' [--overwriteFormulas]
+                  (--inPlace|-o <out.xlsx>|--dryRun)
 
 # Reports (template-driven)
 report:run --template <template.json> \
@@ -90,7 +114,13 @@ report:run --template <template.json> \
   --sourceSpreadsheet <id> --ranges '[...]'
   --output <out.xlsx> | --spreadsheetId <id> [--workbookTemplate <f.xlsx>]
   [--dryRun] [--overwrite] [--overwriteFormulas] [-c/-p/-f auth flags]
+
+# Meta (no auth, no flags)
+capabilities      print the machine-readable capability document: per-backend operations,
+                  I/O forms, formula write vs recalculation, guards, mutation limits,
+                  fidelity exclusions, drive.file visibility; listed ≠ authorized
 ```
+- Local structural edits: `grid:insert`/`grid:delete` on `--workbook` shift cells and manage merges explicitly — a merge intersecting the splice boundary refuses the operation unless `--force` (insert extends it, delete shrinks or drops it). Formula references are NEVER rewritten: the receipt reports `formulasAtRisk` so callers verify them; data validations and conditional formatting ranges are not adjusted. `format:merge` on `--workbook` decomposes MERGE_COLUMNS/MERGE_ROWS into per-line merges. `workbook:write --cells` writes only the listed addresses — the primitive for "fill columns A,B,C,D,J, skip formula columns" template work.
 
 - `-s` = spreadsheet ID (from URL `docs.google.com/spreadsheets/d/<ID>/edit`), `-t` = worksheet tab title (exact, case-sensitive — quote it).
 - All data commands accept: positional JSON array-of-arrays, `-i <file>` (format inferred from extension), or `-i -` (stdin; pipe CSV → add `--inputFormat csv`).
@@ -99,6 +129,9 @@ report:run --template <template.json> \
 - `spreadsheet:share|permissions|unshare` use the Drive API (`drive.file` scope). OAuth tokens issued before that scope was added must re-run `auth:login`. Under `drive.file` only files this app created or has opened are shareable — a pre-existing sheet may need one `spreadsheet:get` through this app first. `--notify` defaults OFF.
 - `data:find` returns `{matchCount, truncated, matches:[{a1,row,column,columnLetter,value,rowValues?}]}`. Use it to locate a row/cell before a targeted `data:update`. `--header "Name"` resolves a column by its header text (first scanned row); `--byRow` returns full row values. Zero matches → `matchCount:0`, exit 0.
 - Structured errors for agents: any command with `--json`/`-j` prints ONE failure envelope on stderr and exits 1 — `{"error":{"code":"NOT_FOUND","message":"...","retryable":false,"retryAfterMs"?,"issues"?}}` — success output unchanged. `--rawOutput`/`-r` gives JSON success AND failure. Codes: `USAGE` `AUTH_REQUIRED` `UNAUTHORIZED` `FORBIDDEN` `NOT_FOUND` `CONFLICT` `RATE_LIMITED` `UPSTREAM` `NETWORK` (the retryable set) `REQUEST_INVALID` `VALIDATION` `SCHEMA_INVALID` `DATA_INVALID` `INTERNAL`. `issues` carry `{row, column, a1, field, code, message, value}` for `data:validate` violations and upsert rejections. Retry only `retryable:true` codes; never replay an ambiguous write blindly.
+- Multi-request writes (`data:batch-update`, `data:upsert`) may carry `error.mutation` in the failure envelope: per-request outcomes `acknowledged`/`rejected`/`unknown` (dispatch may have succeeded) /`not-attempted` with logical A1 ranges, `gridGrowth` tracked separately, the failing `phase`, and conservative `retryGuidance` (`safe-replay`/`verify-then-replay`/`never-blind-replay`). Honor the guidance — `unknown` means the write may already be applied.
+- `--redacted` (env `GSHEET_REDACTED`) strips cell contents, formulas, incoming values and credentials from error envelopes and dry-run diagnostics before serialization — coordinates, counts, statuses and mutation states are kept. Use it when piping failures into logs or transcripts.
+- `data:export-csv` emits deterministic RFC 4180 CSV: `--injection safe` (default) prefixes dangerous leading characters (`= + - @` tab CR) with `'`, `--injection preserve` is byte-faithful and says so in the receipt. Typed negative numbers are never prefixed. With `-o` the write is atomic (0600) and refuses to clobber without `--overwrite`; without `-o` stdout carries only CSV bytes.
 - `data:schema` samples rows 1-100 x columns A-Z by default (`--minRow/--minCol/--maxRow/--maxCol`; first sampled row is the header) and reports header A1 cells, inferred types with counts, formula-cell counts, data-validation rules and named ranges. Types are sample evidence — Google stores dates as numbers — not an authoritative schema.
 - `data:validate` takes the report TableSchema shape (`{"fields":[{"name":"Name","type":"string","required":true}]}`; types `string|number|integer|decimal|boolean|date` plus `required/min/max/enum/unique`). Violations arrive with exact row/A1 coordinates and error code `DATA_INVALID`; a malformed schema fails with `SCHEMA_INVALID`. Both commands are strictly read-only.
 - `data:upsert` is single-writer, keyed by one `--key` column with typed matching (string `"001"` never matches number `1`; leading zeros kept). Header-first input; omitted columns and formulas are preserved; writes are `RAW` by default; it refuses when a bounded `--range` hides trailing table data; `--dryRun` previews added/updated/unchanged rows plus planned ranges. No transaction, no automatic retry, no concurrent writers.

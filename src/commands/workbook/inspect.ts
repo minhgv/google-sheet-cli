@@ -24,15 +24,20 @@ export default class WorkbookInspect extends Command {
       default: false,
       required: false,
     }),
+    includeFormulaCells: Flags.boolean({
+      description: 'Include the full formula-cell address list per sheet (bounded output otherwise)',
+      default: false,
+      required: false,
+    }),
   };
 
   async run() {
     const {
-      flags: { file, rawOutput },
+      flags: { file, rawOutput, includeFormulaCells },
     } = await this.parse(WorkbookInspect);
 
     const workbook = await XlsxWorkbook.load(file);
-    const inspection = workbook.inspect();
+    const inspection = workbook.inspect({ includeFormulaCells });
 
     const result = {
       operation: this.id,
@@ -47,7 +52,19 @@ export default class WorkbookInspect extends Command {
       this.log(`  - SHA-256: ${inspection.sha256Hash || 'none'}`);
       this.log(`  - Sheets (${inspection.sheetCount}):`);
       for (const sheet of inspection.sheets) {
-        this.log(`    • "${sheet.name}" (ID: ${sheet.id}, Rows: ${sheet.rowCount}, Cols: ${sheet.columnCount}, Has formulas: ${sheet.hasFormulas})`);
+        this.log(`    • "${sheet.name}" (ID: ${sheet.id}, Rows: ${sheet.rowCount}, Cols: ${sheet.columnCount}, Has formulas: ${sheet.hasFormulas}${sheet.formulaCellCount ? ` (${sheet.formulaCellCount})` : ''})`);
+        if (sheet.mergedRanges && sheet.mergedRanges.length > 0) {
+          this.log(`      - Merged ranges: ${sheet.mergedRanges.join(', ')}`);
+        }
+        if (sheet.frozen) {
+          this.log(`      - Frozen: ${sheet.frozen.rows} row(s), ${sheet.frozen.columns} column(s)`);
+        }
+        if (sheet.dataValidations && sheet.dataValidations.length > 0) {
+          this.log(`      - Data validations: ${sheet.dataValidations.map((v) => `${v.range}${v.type ? ` (${v.type})` : ''}`).join(', ')}`);
+        }
+        if (sheet.conditionalFormatting && sheet.conditionalFormatting.length > 0) {
+          this.log(`      - Conditional formatting: ${sheet.conditionalFormatting.map((c) => `${c.range} (${c.ruleCount} rule(s))`).join(', ')}`);
+        }
       }
       if (inspection.definedNames && inspection.definedNames.length > 0) {
         this.log(`  - Defined Names (${inspection.definedNames.length}):`);

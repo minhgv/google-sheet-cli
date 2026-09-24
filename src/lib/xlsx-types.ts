@@ -134,7 +134,24 @@ export interface XlsxSheetMetadata {
   rowCount: number;
   columnCount: number;
   hasFormulas: boolean;
+  /** number of cells holding a formula (present whenever hasFormulas is true) */
+  formulaCellCount?: number;
+  /** formula cell addresses, only when inspect() is called with includeFormulaCells */
+  formulaCells?: string[];
+  /** merged ranges in A1 notation, e.g. ["B5:B10"] */
+  mergedRanges?: string[];
+  /** frozen pane split, when the sheet has one */
+  frozen?: { rows: number; columns: number };
+  /** data-validation ranges and their rule types */
+  dataValidations?: { range: string; type?: string }[];
+  /** conditional-formatting ranges with the number of rules on each */
+  conditionalFormatting?: { range: string; ruleCount: number }[];
   managedRange?: string;
+}
+
+export interface XlsxInspectOptions {
+  /** include the full formula-cell address list per sheet (bounded output otherwise) */
+  includeFormulaCells?: boolean;
 }
 
 export interface XlsxDefinedName {
@@ -248,6 +265,136 @@ export interface XlsxLoadOptions {
   maxEntries?: number; // default 10,000
   allowUnsupportedFeatures?: boolean;
   computeHash?: boolean; // default true
+}
+
+// ---------------------------------------------------------------------------
+// XLSX Find Types (local counterpart of GoogleSheetCli.FindOptions/FindResult)
+// ---------------------------------------------------------------------------
+
+export interface XlsxFindOptions {
+  worksheetTitle?: string;
+  /** A1 range bounding the scan; defaults to the used range of the sheet */
+  range?: string;
+  equals?: string;
+  contains?: string;
+  regex?: string;
+  /** restrict the scan to one column letter (e.g. "B") */
+  column?: string;
+  /** restrict the scan to the column whose header cell matches this value */
+  header?: string;
+  ignoreCase?: boolean;
+  /** max matches returned; matchCount still reports the true total */
+  limit?: number;
+  /** collapse matches to unique rows and include full row values */
+  byRow?: boolean;
+}
+
+export interface XlsxFindMatch {
+  a1: string;
+  row: number;
+  column: number;
+  columnLetter: string;
+  value: string;
+  /** present only when byRow is set: the full scanned row the match sits in */
+  rowValues?: (string | number | boolean | null)[];
+}
+
+export interface XlsxFindResult {
+  /** resolved A1 range that was scanned */
+  range: string;
+  matchCount: number;
+  truncated: boolean;
+  matches: XlsxFindMatch[];
+}
+
+// ---------------------------------------------------------------------------
+// XLSX Structural Mutation Types (splice, merge, sparse write, clear)
+// ---------------------------------------------------------------------------
+
+export type XlsxDimension = 'ROWS' | 'COLUMNS';
+
+export interface XlsxSpliceOptions {
+  worksheetTitle?: string;
+  dimension: XlsxDimension;
+  /** 1-based first row/column index to affect */
+  start: number;
+  /** how many rows/columns the operation covers */
+  count?: number;
+  /** insert: clone the style of the row/column before the insertion point */
+  inheritFromBefore?: boolean;
+  /** allow merges intersecting the splice boundary to be adjusted instead of rejected */
+  force?: boolean;
+  dryRun?: boolean;
+}
+
+export interface XlsxSpliceResult {
+  operation: 'insert' | 'delete';
+  sheet: string;
+  dimension: XlsxDimension;
+  start: number;
+  count: number;
+  /** merges that were shifted, extended, shrunk or dropped by the splice */
+  mergesAdjusted: { before: string; after?: string }[];
+  /** merges intersecting the boundary that blocked the splice (empty when applied) */
+  mergeConflicts: string[];
+  /** formula cells whose references may now be stale (never rewritten - see warnings) */
+  formulasAtRisk: number;
+  /** values removed by a delete (empty for insert) */
+  removedValues?: ReportCell[][];
+  dryRun: boolean;
+  warnings: string[];
+}
+
+export interface XlsxMergeOptions {
+  worksheetTitle?: string;
+  range: string;
+  mergeType?: 'MERGE_ALL' | 'MERGE_COLUMNS' | 'MERGE_ROWS';
+  unmerge?: boolean;
+  dryRun?: boolean;
+}
+
+export interface XlsxMergeResult {
+  sheet: string;
+  range: string;
+  /** concrete ranges merged/unmerged (MERGE_COLUMNS/ROWS decompose into one per line) */
+  affected: string[];
+  unmerge: boolean;
+  dryRun: boolean;
+}
+
+export interface XlsxSetCellEntry {
+  /** A1 address, optionally sheet-qualified ("Sheet1!B2") */
+  a1: string;
+  value: ReportCell;
+}
+
+export interface XlsxSetCellsOptions {
+  worksheetTitle?: string;
+  overwriteFormulas?: boolean;
+  dryRun?: boolean;
+}
+
+export interface XlsxSetCellsResult {
+  applied: number;
+  changes: XlsxDiffItem[];
+  conflicts: XlsxDiffItem[];
+  dryRun: boolean;
+}
+
+export interface XlsxClearOptions {
+  worksheetTitle?: string;
+  range: string;
+  overwriteFormulas?: boolean;
+  dryRun?: boolean;
+}
+
+export interface XlsxClearResult {
+  sheet: string;
+  range: string;
+  cellsCleared: number;
+  /** formula cells that would be / were cleared */
+  formulasOverwritten: string[];
+  dryRun: boolean;
 }
 
 export interface XlsxCreateOptions {

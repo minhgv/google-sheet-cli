@@ -12,9 +12,16 @@ export const VALIDATION_CODE = 'VALIDATION';
 export class ValidationError extends Error {
   /** Structural classification marker; never changes, never carries request-specific data. */
   readonly code = VALIDATION_CODE;
+  /**
+   * Message shown INSTEAD of `message` when redaction is enabled (see cli-errors'
+   * GSheetErrorOptions.redactedMessage). Read structurally by the envelope serializer, so
+   * this class stays dependency-free.
+   */
+  readonly redactedMessage?: string;
 
-  constructor(message: string) {
+  constructor(message: string, redactedMessage?: string) {
     super(message);
     this.name = 'ValidationError';
+    if (redactedMessage !== undefined) this.redactedMessage = redactedMessage;
   }
 }

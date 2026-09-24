@@ -90,6 +90,12 @@ export default class ReportRun extends Command {
       default: false,
       required: false,
     }),
+    discardUnsupported: Flags.boolean({
+      description:
+        'Allow saving a workbook whose unsupported features (charts, pivot tables, macros) would be dropped by the local engine',
+      default: false,
+      required: false,
+    }),
     // Reusable Google authentication flags
     ...googleAuthFlags,
   };
@@ -110,6 +116,7 @@ export default class ReportRun extends Command {
         dryRun,
         overwrite,
         overwriteFormulas,
+        discardUnsupported,
         rawOutput,
         ...authFlags
       },
@@ -181,6 +188,7 @@ export default class ReportRun extends Command {
       },
       dryRun,
       overwriteFormulas,
+      discardUnsupported,
     };
 
     const receipt = await runReport(runOptions);

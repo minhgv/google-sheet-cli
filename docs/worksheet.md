@@ -15,8 +15,8 @@ Add a worksheet with the specified title to the spreadsheet
 
 ```
 USAGE
-  $ google-sheet worksheet:add -t <value> -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>]
+  $ google-sheet worksheet:add -t <value> -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                    Show CLI help.
@@ -25,6 +25,9 @@ FLAGS
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -54,8 +57,8 @@ Copy a worksheet to an explicit destination spreadsheet through the Sheets API. 
 
 ```
 USAGE
-  $ google-sheet worksheet:copy -s <value> -t <value> --destinationSpreadsheetId <value> [-h] [-r] [-j] [-c <value>]
-    [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>]
+  $ google-sheet worksheet:copy -s <value> -t <value> --destinationSpreadsheetId <value> [-h] [-r] [-j] [--redacted]
+    [-c <value>] [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                              Show CLI help.
@@ -65,6 +68,9 @@ FLAGS
   -s, --spreadsheetId=<value>             (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>            (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
       --destinationSpreadsheetId=<value>  (required) ID of the spreadsheet to copy the worksheet into
+      --redacted                          [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and
+                                          credentials from error envelopes and dry-run diagnostics before they are
+                                          written. Coordinates, counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -96,8 +102,8 @@ Get info for a specific worksheet
 
 ```
 USAGE
-  $ google-sheet worksheet:get -t <value> -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>]
+  $ google-sheet worksheet:get -t <value> -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                    Show CLI help.
@@ -106,6 +112,9 @@ FLAGS
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -135,8 +144,8 @@ Remove a worksheet with the specified title from the spreadsheet
 
 ```
 USAGE
-  $ google-sheet worksheet:remove -t <value> -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>]
+  $ google-sheet worksheet:remove -t <value> -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                    Show CLI help.
@@ -145,6 +154,9 @@ FLAGS
   -r, --rawOutput               Get the raw output as a JSON string
   -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -174,8 +186,8 @@ Add a worksheet with the specified title to the spreadsheet
 
 ```
 USAGE
-  $ google-sheet worksheet:rename -t <value> --newWorksheetTitle <value> -s <value> [-h] [-r] [-j] [-c <value>] [-p
-    <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>]
+  $ google-sheet worksheet:rename -t <value> --newWorksheetTitle <value> -s <value> [-h] [-r] [-j] [--redacted] [-c
+    <value>] [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                       Show CLI help.
@@ -185,6 +197,9 @@ FLAGS
   -s, --spreadsheetId=<value>      (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
   -t, --worksheetTitle=<value>     (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
       --newWorksheetTitle=<value>  (required) New title of the worksheet to use
+      --redacted                   [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                   from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                   counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the

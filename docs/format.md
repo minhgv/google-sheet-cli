@@ -12,13 +12,13 @@ Apply cell formatting (text style, colors, alignment, wrap, number format, borde
 
 ```
 USAGE
-  $ google-sheet format:cells -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [--range <value>] [--bold] [--italic] [--underline] [--strikethrough]
-    [--fontSize <value>] [--fontFamily <value>] [--textColor <value>] [--backgroundColor <value>] [--horizontalAlignment
-    LEFT|CENTER|RIGHT] [--verticalAlignment TOP|MIDDLE|BOTTOM] [--wrapStrategy OVERFLOW_CELL|CLIP|WRAP]
-    [--numberFormatType TEXT|NUMBER|PERCENT|CURRENCY|DATE|TIME|DATE_TIME|SCIENTIFIC --numberFormat <value>] [--borders
-    <value>] [--borderStyle DOTTED|DASHED|SOLID|SOLID_MEDIUM|SOLID_THICK|DOUBLE|NONE] [--borderColor <value>] [--clear]
-    [-i <value>] [--dryRun]
+  $ google-sheet format:cells -s <value> -t <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>] [--range <value>] [--bold] [--italic] [--underline]
+    [--strikethrough] [--fontSize <value>] [--fontFamily <value>] [--textColor <value>] [--backgroundColor <value>]
+    [--horizontalAlignment LEFT|CENTER|RIGHT] [--verticalAlignment TOP|MIDDLE|BOTTOM] [--wrapStrategy
+    OVERFLOW_CELL|CLIP|WRAP] [--numberFormatType TEXT|NUMBER|PERCENT|CURRENCY|DATE|TIME|DATE_TIME|SCIENTIFIC
+    --numberFormat <value>] [--borders <value>] [--borderStyle DOTTED|DASHED|SOLID|SOLID_MEDIUM|SOLID_THICK|DOUBLE|NONE]
+    [--borderColor <value>] [--clear] [-i <value>] [--dryRun]
 
 FLAGS
   -h, --help                          Show CLI help.
@@ -46,6 +46,9 @@ FLAGS
       --numberFormatType=<option>     Explicit number format type (inferred from the pattern when omitted)
                                       <options: TEXT|NUMBER|PERCENT|CURRENCY|DATE|TIME|DATE_TIME|SCIENTIFIC>
       --range=<value>                 The A1 range to format (e.g. "A1:J1"); required unless --input carries "ranges"
+      --redacted                      [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and
+                                      credentials from error envelopes and dry-run diagnostics before they are written.
+                                      Coordinates, counts, statuses and outcome states are kept.
       --strikethrough                 Strikethrough text
       --textColor=<value>             Text color as #RRGGBB
       --underline                     Underline text
@@ -84,26 +87,37 @@ _See code: [src/commands/format/cells.ts](https://github.com/jroehl/google-sheet
 
 ## `google-sheet format:merge`
 
-Merge or unmerge cells over a bounded range. Merging keeps the top-left value; other values in the range are hidden by Google.
+Merge or unmerge cells over a bounded range. Merging keeps the top-left value; other values in the range are hidden. With --workbook the merge runs on a local XLSX file instead of Google Sheets.
 
 ```
 USAGE
-  $ google-sheet format:merge -s <value> -t <value> --range <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f
-    <value>] [--useOauth] [--clientSecretFile <value>] [--type MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS | --unmerge]
-    [--dryRun]
+  $ google-sheet format:merge --range <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [-s <value>] [-t <value>] [--workbook <value>] [-o <value>] [--inPlace]
+    [--discardUnsupported] [--type MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS | --unmerge] [--dryRun]
 
 FLAGS
   -h, --help                    Show CLI help.
   -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
                                 Success output is unchanged - use --rawOutput for JSON success.
+  -o, --output=<value>          Destination path for the modified XLSX file (without it and without --inPlace the
+                                mutation is refused unless --dryRun)
   -r, --rawOutput               Get the raw output as a JSON string
-  -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
-  -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
-      --dryRun                  Preview the batchUpdate request without applying it
+  -s, --spreadsheetId=<value>   [env: SPREADSHEET_ID] ID of the spreadsheet to use (Google Sheets target)
+  -t, --worksheetTitle=<value>  [env: WORKSHEET_TITLE] Title of the worksheet to use (Google Sheets target; also selects
+                                the sheet inside --workbook)
+      --discardUnsupported      Allow saving a workbook whose unsupported features (charts, pivot tables, macros) would
+                                be dropped by the local engine
+      --dryRun                  Preview the mutation without applying it
+      --inPlace                 Modify the --workbook file in place (a .bak backup is written first)
       --range=<value>           (required) The A1 range to merge or unmerge (e.g. "A1:J1")
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
       --type=<option>           [default: MERGE_ALL] Merge type
                                 <options: MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS>
       --unmerge                 Unmerge previously merged cells in the range
+      --workbook=<value>        Path to a local .xlsx workbook to mutate instead of the Google Sheets target. Long name
+                                only: the shared short -f belongs to --credentialsFile
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -118,8 +132,8 @@ AUTHENTICATION FLAGS
       --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
 
 DESCRIPTION
-  Merge or unmerge cells over a bounded range. Merging keeps the top-left value; other values in the range are hidden by
-  Google.
+  Merge or unmerge cells over a bounded range. Merging keeps the top-left value; other values in the range are hidden.
+  With --workbook the merge runs on a local XLSX file instead of Google Sheets.
 
 EXAMPLES
   $ gsheet format:merge --spreadsheetId=<id> --worksheetTitle=Report --range=A1:J1
@@ -127,6 +141,8 @@ EXAMPLES
   $ gsheet format:merge --spreadsheetId=<id> --worksheetTitle=Report --range=A1:C3 --type=MERGE_ROWS
 
   $ gsheet format:merge --spreadsheetId=<id> --worksheetTitle=Report --range=A1:J1 --unmerge
+
+  $ gsheet format:merge --workbook=template.xlsx -t "Functional effort" --range=B8:B12 --inPlace
 ```
 
 _See code: [src/commands/format/merge.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/format/merge.ts)_

@@ -62,6 +62,14 @@ export async function createBackupCopy(
 /**
  * Saves a buffer to a target path atomically with overwrite/in-place safeguards,
  * conflict verification, and automatic cleanup of temporary files on error.
+ *
+ * The temporary file is created with mode 0o600, so the renamed output is
+ * owner-only. What this does NOT guarantee, stated honestly: atomic rename is
+ * not fsync durability (bytes may not be flushed to stable storage when this
+ * resolves), and it is not locking (concurrent writers can still race; the
+ * hash check narrows but does not close that window). The guarantee is only
+ * that a reader observes either the previous file or the fully written new
+ * one, never a partial write.
  */
 export async function saveBufferAtomic(
   buffer: Buffer,
@@ -124,8 +132,9 @@ export async function saveBufferAtomic(
   const tempFilePath = path.join(targetDir, tempFileName);
 
   try {
-    // Write to temporary file
-    await fs.promises.writeFile(tempFilePath, buffer, { mode: 0o644 });
+    // Write to temporary file. 0o600 persists through the rename below, so
+    // the final artifact is owner-only — the rename never widens access.
+    await fs.promises.writeFile(tempFilePath, buffer, { mode: 0o600 });
 
     // Atomically replace target
     await fs.promises.rename(tempFilePath, resolvedTarget);

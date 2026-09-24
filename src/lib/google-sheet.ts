@@ -29,6 +29,10 @@ import type { ReportCell, ReportDocument, ReportFormula, ReportNumberFormat, Rep
 import { buildFormatRequests, buildMergeRequest, FormatSpec } from './sheet-format';
 import { buildTableFrame, firstBelowBoundCell, parseUpsertInput, planUpsert } from './upsert-plan';
 import { ValidationError } from './validation-error';
+// Type-only: the value side of cli-errors is loaded lazily on first failure, so this module's
+// static import graph - and with it the oclif-free `google-sheet-cli/sheet` subpath - stays clean.
+import type { classifyError, GSheetError, GSheetErrorCode } from './cli-errors';
+import { MutationOutcomeBuilder, MutationOutcomeReport, MutationPhase, unknownOutcomeGuidance } from './mutation-outcome';
 
 export namespace GoogleSheetCli {
   export interface Credentials {
@@ -96,6 +100,12 @@ export namespace GoogleSheetCli {
     overwriteFormulas?: boolean;
     chunkByteSize?: number;
     maxRowsPerChunk?: number;
+    /**
+     * Operation label recorded in a failure's mutation-outcome report; defaults to
+     * 'updateDataBatch'. Internal callers that wrap this method (e.g. upsert) pass their own
+     * name so agents see the operation they actually invoked.
+     */
+    operation?: string;
   }
 
   export interface BatchUpdateChange {
@@ -388,6 +398,34 @@ export namespace GoogleSheetCli {
     webViewLink?: string;
   }
 
+  export interface ListSpreadsheetsOptions {
+    /** title fragment matched with Drive's `contains` operator; omit to list everything visible */
+    name?: string;
+    /** match the whole title with Drive's `=` operator instead of a substring */
+    exact?: boolean;
+    /** page size per request; defaults to 50 and is bounded to 1..100 */
+    pageSize?: number;
+    /** opaque continuation token from a previous page's nextPageToken */
+    pageToken?: string;
+  }
+
+  /** The subset of the Drive File resource a listing reports. */
+  export interface ListedSpreadsheet {
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedTime?: string;
+  }
+
+  export interface ListSpreadsheetsResult {
+    /** one row per Drive file, in Drive's order; duplicate titles stay separate rows — a title is never an id */
+    files: ListedSpreadsheet[];
+    /** present when more pages remain; pass it back as pageToken to continue */
+    nextPageToken?: string;
+    /** fixed disclosure of the drive.file visibility boundary; never drop it from the output */
+    visibilityNote: string;
+  }
+
   export interface CopyWorksheetOptions {
     worksheetTitle: string;
     /** copyTo never guesses the destination; it has to be named explicitly */
@@ -437,6 +475,63 @@ const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const EXPORT_MIME_TYPES: Record<'pdf' | 'xlsx', string> = {
   pdf: 'application/pdf',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+// The only mime type discovery looks for. Kept in step with test/fake-sheets.ts, which seeds
+// and filters on the same literal.
+const DRIVE_FILES_SPREADSHEET_MIME = 'application/vnd.google-apps.spreadsheet';
+
+// files.list page size: 50 by default, hard-bounded to Drive's documented maximum of 100 so an
+// unbounded caller cannot turn one listing into a bulk export.
+const DEFAULT_LIST_PAGE_SIZE = 50;
+const MAX_LIST_PAGE_SIZE = 100;
+
+/**
+ * Disclosure that rides on every discovery result: under drive.file the listing only covers
+ * spreadsheets this application created or has opened, so "no rows" never means "no file".
+ */
+export const DRIVE_FILE_VISIBILITY_NOTE =
+  'Listing uses the drive.file OAuth scope: only spreadsheets this application created or has opened are visible. ' +
+  'An empty result does not prove a spreadsheet is absent — address such files by ID.';
+
+/**
+ * Shape of the Drive files.list response this class reads; the fields asked for are exactly the
+ * ones the result maps onto.
+ */
+type DriveFilesListResponse = {
+  files?: { id?: string | null; name?: string | null; mimeType?: string | null; modifiedTime?: string | null }[];
+  nextPageToken?: string;
+};
+
+/**
+ * Escape a literal for the Drive query language: backslash first, then the single quote, so a
+ * title like `Bob's Plan` travels as `Bob\'s Plan` and can never close the quoted string early.
+ */
+const escapeDriveQueryLiteral = (value: string): string => value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+/**
+ * Build the files.list q parameter from fixed parts and escaped literals only — caller input
+ * is a value, never a query fragment.
+ */
+const driveSpreadsheetsQuery = (name: string | undefined, exact: boolean): string => {
+  let query = `mimeType='${DRIVE_FILES_SPREADSHEET_MIME}'`;
+  if (name !== undefined) {
+    const literal = escapeDriveQueryLiteral(name);
+    query += exact ? ` and name='${literal}'` : ` and name contains '${literal}'`;
+  }
+  return query;
+};
+
+/**
+ * Resolve the files.list page size: undefined means the 50 default, anything finite is clamped
+ * into 1..100 so the listing stays bounded on both ends.
+ */
+const resolveListPageSize = (pageSize?: number): number => {
+  if (pageSize === undefined) return DEFAULT_LIST_PAGE_SIZE;
+  if (typeof pageSize !== 'number' || !Number.isFinite(pageSize)) {
+    throw new Error('listSpreadsheets requires a finite "pageSize" when one is provided');
+  }
+  return Math.min(MAX_LIST_PAGE_SIZE, Math.max(1, Math.round(pageSize)));
 };
 
 const LOG_NAMESPACE = 'gsheet:sheets';
@@ -492,6 +587,145 @@ const RETRY_CONFIG = {
     return new Promise((resolve) => setTimeout(resolve, ms));
   },
 };
+
+/**
+ * Physical request kind recorded for one packed values chunk of an `updateDataBatch` run.
+ */
+const VALUES_BATCH_UPDATE_REQUEST_KIND = 'values.batchUpdate';
+
+/**
+ * HTTP status carried by a thrown Google API/transport error, if any, read from the usual
+ * response/status/code shapes and validated to the same 100-599 range `asHttpStatus` enforces
+ * in cli-errors. cli-errors is deliberately outside this module's static import graph (the
+ * `google-sheet-cli/sheet` subpath must stay oclif-free), so only its error shapes are read here.
+ */
+const outcomeHttpStatus = (err: unknown): number | undefined => {
+  if (!err || typeof err !== 'object') return undefined;
+  const e = err as Record<string, unknown>;
+  const response = e.response;
+  const responseStatus = response && typeof response === 'object' ? (response as Record<string, unknown>).status : undefined;
+  const candidate = responseStatus ?? e.status ?? e.code;
+  return typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 100 && candidate <= 599
+    ? candidate
+    : undefined;
+};
+
+/** Shape of the cli-errors module the failure paths need. */
+interface CliErrorsModule {
+  GSheetError: typeof GSheetError;
+  GSheetErrorCode: typeof GSheetErrorCode;
+  classifyError: typeof classifyError;
+}
+
+let cliErrorsModule: CliErrorsModule | undefined;
+const loadCliErrors = (): CliErrorsModule => {
+  // Lazy require, deliberately not a static import: cli-errors carries @oclif/core, and this
+  // module's import graph - the oclif-free `google-sheet-cli/sheet` subpath - must stay free
+  // of it until a failure actually needs the typed error contract. The extensionless CJS
+  // specifier resolves exactly like this file's static imports, compiled and under ts-node.
+  if (!cliErrorsModule) {
+    // untyped CJS require; the shape is pinned by CliErrorsModule
+    cliErrorsModule = require('./cli-errors') as CliErrorsModule;
+  }
+  return cliErrorsModule;
+};
+
+/**
+ * A preflight refusal of `updateDataBatch`: nothing was dispatched, so the outcome carries an
+ * empty request list, the validate phase and the derived safe-replay guidance. The message
+ * text is byte-identical to the plain `Error` this used to throw; only the typed code
+ * (VALIDATION, the established code for local input refusals) and the outcome are added.
+ */
+const batchPreflightRefusal = (message: string, redactedMessage?: string): GSheetError => {
+  const { GSheetError, GSheetErrorCode } = loadCliErrors();
+  return new GSheetError(GSheetErrorCode.VALIDATION, message, {
+    mutationOutcome: buildBatchUpdateMutationOutcome({ batches: [], batchesExecuted: 0, cause: undefined, phase: 'validate' }),
+    ...(redactedMessage !== undefined ? { redactedMessage } : {}),
+  });
+};
+
+/** Input for {@link buildBatchUpdateMutationOutcome}. */
+export interface BatchUpdateOutcomeInput {
+  /** The full packed chunk plan, in dispatch order. */
+  batches: readonly (readonly { range: string }[])[];
+  /** Number of chunks acknowledged before the failure; the chunk at this index is the failing one. */
+  batchesExecuted: number;
+  /** The thrown transport/API error; inspected for a usable HTTP status. */
+  cause: unknown;
+  /** Grid-growth effect observed before the values write, when the job attempted any. */
+  gridGrowth?: { attempted: boolean; completed: boolean; details?: string };
+  /** Phase the failure occurred in; defaults to 'values-write'. */
+  phase?: MutationPhase;
+  /** False when the failure happened before any values chunk was dispatched (grid-growth phase). */
+  failedChunkDispatched?: boolean;
+  /**
+   * True only for append-like operations reusing this builder: a lost response then locks
+   * never-blind-replay via `unknownOutcomeGuidance(true)`. values.update chunks are
+   * deterministic overwrites, so updateDataBatch itself stays idempotent and keeps the
+   * derived verify-then-replay.
+   */
+  nonIdempotent?: boolean;
+  /** Operation label recorded in the report; defaults to 'updateDataBatch'. */
+  operation?: string;
+}
+
+/**
+ * Build the typed mutation-outcome report for a failed `updateDataBatch` run. Pure mapping of
+ * the chunk plan and the thrown cause onto the locked vocabulary: the dispatched prefix is
+ * `acknowledged`; the failing chunk is `rejected` only when a usable response proves
+ * non-application (4xx, including a 429 refused before processing), `unknown` for a
+ * 5xx-after-send or a lost response; the undispatched tail is `not-attempted`. Grid growth
+ * rides in `gridGrowth`, separately from the value writes: the grid may have grown even when
+ * the value write failed.
+ */
+export function buildBatchUpdateMutationOutcome(input: BatchUpdateOutcomeInput): MutationOutcomeReport {
+  const status = outcomeHttpStatus(input.cause);
+  const failedRejected = status !== undefined && status >= 400 && status < 500;
+  const failingChunkDispatched = input.failedChunkDispatched !== false && input.batchesExecuted < input.batches.length;
+  const builder = new MutationOutcomeBuilder(input.operation ?? 'updateDataBatch');
+  input.batches.forEach((batch, index) => {
+    const a1Ranges = batch.map((item) => item.range);
+    if (index < input.batchesExecuted) {
+      builder.request({ requestIndex: index, kind: VALUES_BATCH_UPDATE_REQUEST_KIND, a1Ranges, state: 'acknowledged' });
+    } else if (index === input.batchesExecuted && failingChunkDispatched) {
+      builder.request({
+        requestIndex: index,
+        kind: VALUES_BATCH_UPDATE_REQUEST_KIND,
+        a1Ranges,
+        state: failedRejected ? 'rejected' : 'unknown',
+        ...(status !== undefined ? { httpStatus: status } : {}),
+        causeSummary: failedRejected
+          ? `rejected before application with HTTP ${status}`
+          : status !== undefined
+            ? `server error after send (HTTP ${status}); application state uncertain`
+            : 'dispatched but no usable response came back',
+      });
+    } else {
+      builder.request({
+        requestIndex: index,
+        kind: VALUES_BATCH_UPDATE_REQUEST_KIND,
+        a1Ranges,
+        state: 'not-attempted',
+        causeSummary: 'not dispatched after the earlier failure',
+      });
+    }
+  });
+  if (input.gridGrowth) {
+    builder.gridGrowth(input.gridGrowth.attempted, input.gridGrowth.completed, input.gridGrowth.details);
+  }
+  builder.phase(input.phase ?? 'values-write');
+  if (input.gridGrowth?.attempted && !input.gridGrowth.completed) {
+    // The derivation cannot see gridGrowth: an unconfirmed growth leaves a replay's own
+    // growth effect uncertain, so be more conservative than the request-only derivation.
+    builder.retryGuidance('verify-then-replay', 'The grid growth request was not confirmed before the failure, so a replay may grow the grid again. Check the worksheet dimensions before replaying.');
+  }
+  if (input.nonIdempotent && failingChunkDispatched && !failedRejected) {
+    // unknownOutcomeGuidance locks never-blind-replay for non-idempotent operations: a hidden
+    // application would be duplicated by an unconditional replay.
+    builder.retryGuidance(unknownOutcomeGuidance(true), 'A request was dispatched without a usable acknowledgement and the operation is not idempotent, so replaying could duplicate a hidden application. Verify remote state before any replay.');
+  }
+  return builder.build();
+}
 
 /**
  * GoogleSheet helper class for CRUD and Batch operations
@@ -949,6 +1183,16 @@ export default class GoogleSheet {
    * Batch update multiple ranges with prevalidation, formula overwrite protection,
    * dry-run preview, bounded payload chunking (<=~2MB), and single grid-growth metadata check.
    *
+   * Failures after dispatch throw a `GSheetError` whose message text is byte-identical to the
+   * plain `Error` this used to throw, carrying the original error as `cause` and a typed
+   * `mutationOutcome` report (see `./mutation-outcome`): dispatched chunks `acknowledged`, a
+   * chunk refused by a usable 4xx response `rejected`, a 5xx-after-send or lost response
+   * `unknown`, undispatched chunks `not-attempted`; grid growth is reported separately in
+   * `gridGrowth` - the grid may have grown even when the value write failed. Local preflight
+   * refusals (bad range, non-2D values, bounded range overflow, formula-overwrite conflicts)
+   * throw `GSheetError` with code VALIDATION and a validate-phase outcome. A failure of the
+   * `getSpreadsheet` planning read propagates unchanged.
+   *
    * @param {{ range: string; values: GoogleSheetCli.RawData }[]} updates
    * @param {GoogleSheetCli.BatchUpdateOptions} [options={}]
    * @param {string} [spreadsheetId]
@@ -980,11 +1224,11 @@ export default class GoogleSheet {
 
     for (const update of updates) {
       if (!update.range || typeof update.range !== 'string') {
-        throw new Error('Each update must have a valid non-empty range string');
+        throw batchPreflightRefusal('Each update must have a valid non-empty range string');
       }
       const parsed = parseStrictA1Range(update.range);
       if (!Array.isArray(update.values) || !update.values.every(Array.isArray)) {
-        throw new Error(`Update values for range "${update.range}" must be a 2D array`);
+        throw batchPreflightRefusal(`Update values for range "${update.range}" must be a 2D array`);
       }
 
       const rowCount = update.values.length;
@@ -1000,7 +1244,7 @@ export default class GoogleSheet {
         const allowedRows = parsed.endRow - parsed.startRow + 1;
         const allowedCols = parsed.endCol - parsed.startCol + 1;
         if (rowCount > allowedRows || updateMaxCols > allowedCols) {
-          throw new Error(
+          throw batchPreflightRefusal(
             `Data (${rowCount}x${updateMaxCols}) exceeds explicit bounded range "${update.range}" (${allowedRows}x${allowedCols})`
           );
         }
@@ -1026,8 +1270,9 @@ export default class GoogleSheet {
           .slice(0, 5)
           .map((c) => `${c.cell} (existing: "${c.existingFormula}", incoming: ${JSON.stringify(c.incomingValue)})`)
           .join('; ');
-        throw new Error(
-          `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflictDetails}`
+        throw batchPreflightRefusal(
+          `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflictDetails}`,
+          `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflicts.length} cell(s) at ${conflicts.slice(0, 5).map((c) => c.cell).join(', ')}`
         );
       }
     }
@@ -1113,19 +1358,56 @@ export default class GoogleSheet {
       }
     }
 
-    if (gridGrowthRequests.length > 0) {
-      await this.sheets.spreadsheets.batchUpdate({
-        spreadsheetId: targetSpreadsheetId,
-        requestBody: { requests: gridGrowthRequests },
-      });
-    }
-
-    // Step 5: Chunk and Execute Writes
+    // The chunk plan is pure computation, so it happens before the growth dispatch: the
+    // grid-growth failure report below can then list every values chunk as not-attempted.
     const maxChunkBytes = options.chunkByteSize || DEFAULT_CHUNK_BYTE_SIZE;
     const packedBatches = packUpdateBatches(updates, maxChunkBytes);
     const completedRanges: string[] = [];
     let batchesExecuted = 0;
 
+    // Step 5: Grid growth in one batchUpdate, tracked separately from the value writes - the
+    // grid may grow even when the value write that follows fails.
+    let gridGrowthOutcome: { attempted: boolean; completed: boolean; details?: string } = {
+      attempted: false,
+      completed: false,
+    };
+    if (gridGrowthRequests.length > 0) {
+      const { GSheetError, classifyError } = loadCliErrors();
+      try {
+        await this.sheets.spreadsheets.batchUpdate({
+          spreadsheetId: targetSpreadsheetId,
+          requestBody: { requests: gridGrowthRequests },
+        });
+        gridGrowthOutcome = {
+          attempted: true,
+          completed: true,
+          details: `${gridGrowthRequests.length} appendDimension request(s) applied`,
+        };
+      } catch (error: unknown) {
+        // The raw upstream message is kept verbatim - no wrapper prose is added on this path.
+        const meta = classifyError(error);
+        throw new GSheetError(meta.code, error instanceof Error ? error.message : String(error), {
+          retryable: meta.retryable,
+          retryAfterMs: meta.retryAfterMs,
+          mutationOutcome: buildBatchUpdateMutationOutcome({
+            batches: packedBatches,
+            batchesExecuted: 0,
+            cause: error,
+            gridGrowth: {
+              attempted: true,
+              completed: false,
+              details: `${gridGrowthRequests.length} appendDimension request(s) not confirmed`,
+            },
+            phase: 'grid-growth',
+            failedChunkDispatched: false,
+            operation: options.operation,
+          }),
+          cause: error,
+        });
+      }
+    }
+
+    // Step 6: Chunk and Execute Writes
     for (let b = 0; b < packedBatches.length; b++) {
       const batch = packedBatches[b];
       const batchData: sheets_v4.Schema$ValueRange[] = batch.map((item) => ({
@@ -1148,8 +1430,24 @@ export default class GoogleSheet {
       } catch (error: unknown) {
         const failedRanges = batch.map((item) => item.range).join(', ');
         const msg = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Batch update failed at batch ${b + 1}/${packedBatches.length} [${failedRanges}]: ${msg}. Successfully completed ranges: ${completedRanges.length > 0 ? completedRanges.join(', ') : 'none'}`
+        const { GSheetError, classifyError } = loadCliErrors();
+        const meta = classifyError(error);
+        throw new GSheetError(
+          meta.code,
+          `Batch update failed at batch ${b + 1}/${packedBatches.length} [${failedRanges}]: ${msg}. Successfully completed ranges: ${completedRanges.length > 0 ? completedRanges.join(', ') : 'none'}`,
+          {
+            retryable: meta.retryable,
+            retryAfterMs: meta.retryAfterMs,
+            mutationOutcome: buildBatchUpdateMutationOutcome({
+              batches: packedBatches,
+              batchesExecuted,
+              cause: error,
+              gridGrowth: gridGrowthOutcome,
+              phase: 'values-write',
+              operation: options.operation,
+            }),
+            cause: error,
+          }
         );
       }
     }
@@ -1260,7 +1558,8 @@ export default class GoogleSheet {
         .map((c) => `${c.cell} (existing: "${c.existingFormula}", incoming: ${JSON.stringify(c.incomingValue)})`)
         .join('; ');
       throw new ValidationError(
-        `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflictDetails}`
+        `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflictDetails}`,
+        `Cannot overwrite existing formula(s) without overwriteFormulas=true. Conflicts detected: ${conflicts.length} cell(s) at ${conflicts.slice(0, 5).map((c) => c.cell).join(', ')}`
       );
     }
 
@@ -1418,6 +1717,7 @@ export default class GoogleSheet {
         dryRun: options.dryRun,
         overwriteFormulas: options.overwriteFormulas,
         valueInputOption: options.valueInputOption || GoogleSheetCli.ValueInputOption.RAW,
+        operation: 'upsert',
       },
       targetSpreadsheetId
     );
@@ -2657,6 +2957,59 @@ export default class GoogleSheet {
     if (!bytes) throw new Error('Drive API returned an unexpected export payload');
 
     return { spreadsheetId: fileId, mimeType, bytes, byteLength: bytes.length };
+  }
+
+  /**
+   * List the spreadsheets visible to this app through the Drive API files.list endpoint.
+   * Requires the drive.file scope: only files this application created or has opened are
+   * visible, and the result always carries a visibilityNote saying so, because an empty
+   * listing does not prove a spreadsheet is absent. Query values are escaped into the Drive
+   * query language, never interpolated raw. Duplicate titles are kept as separate rows and
+   * nothing here ever selects a spreadsheet by itself — discovery hands back ids, a caller
+   * picks one.
+   *
+   * @param {GoogleSheetCli.ListSpreadsheetsOptions} [options={}] - name filter (partial by default, whole-title with exact), page size and continuation token
+   * @returns {Promise<GoogleSheetCli.ListSpreadsheetsResult>} one page of files, the next token when more pages remain, and the visibility note
+   * @memberof GoogleSheet
+   */
+  async listSpreadsheets(options: GoogleSheetCli.ListSpreadsheetsOptions = {}): Promise<GoogleSheetCli.ListSpreadsheetsResult> {
+    const { name, exact = false, pageSize, pageToken } = options;
+    if (name !== undefined && (typeof name !== 'string' || name.length === 0)) {
+      throw new Error('listSpreadsheets requires a non-empty "name" when one is provided');
+    }
+    if (pageToken !== undefined && (typeof pageToken !== 'string' || pageToken.length === 0)) {
+      throw new Error('listSpreadsheets requires a non-empty "pageToken" when one is provided');
+    }
+
+    const params: Record<string, unknown> = {
+      q: driveSpreadsheetsQuery(name, exact),
+      pageSize: resolveListPageSize(pageSize),
+      fields: 'files(id,name,mimeType,modifiedTime),nextPageToken',
+      spaces: 'drive',
+      ...(pageToken !== undefined ? { pageToken } : {}),
+    };
+
+    const response = await this.driveRequest<DriveFilesListResponse>({
+      method: 'GET',
+      url: `${DRIVE_API_BASE}/files`,
+      params,
+    });
+
+    type DriveFileRow = NonNullable<DriveFilesListResponse['files']>[number];
+    const files = (response.files || [])
+      .filter((file): file is DriveFileRow & { id: string } => typeof file?.id === 'string')
+      .map((file) => ({
+        id: file.id,
+        name: typeof file.name === 'string' ? file.name : '',
+        mimeType: typeof file.mimeType === 'string' ? file.mimeType : '',
+        ...(typeof file.modifiedTime === 'string' ? { modifiedTime: file.modifiedTime } : {}),
+      }));
+
+    return {
+      files,
+      ...(response.nextPageToken ? { nextPageToken: response.nextPageToken } : {}),
+      visibilityNote: DRIVE_FILE_VISIBILITY_NOTE,
+    };
   }
 
   /**

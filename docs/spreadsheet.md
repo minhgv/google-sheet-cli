@@ -7,6 +7,7 @@ Manage spreadsheets
 * [`google-sheet spreadsheet:copy`](#google-sheet-spreadsheetcopy)
 * [`google-sheet spreadsheet:export`](#google-sheet-spreadsheetexport)
 * [`google-sheet spreadsheet:get`](#google-sheet-spreadsheetget)
+* [`google-sheet spreadsheet:list`](#google-sheet-spreadsheetlist)
 * [`google-sheet spreadsheet:permissions`](#google-sheet-spreadsheetpermissions)
 * [`google-sheet spreadsheet:share`](#google-sheet-spreadsheetshare)
 * [`google-sheet spreadsheet:unshare`](#google-sheet-spreadsheetunshare)
@@ -17,14 +18,17 @@ Add a worksheet with the specified title to the spreadsheet
 
 ```
 USAGE
-  $ google-sheet spreadsheet:add --spreadsheetTitle <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>]
+  $ google-sheet spreadsheet:add --spreadsheetTitle <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                      Show CLI help.
   -j, --json                      Report failures as a machine-readable JSON envelope on stderr (exit code 1 on
                                   failure). Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput                 Get the raw output as a JSON string
+      --redacted                  [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                  from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                  counts, statuses and outcome states are kept.
       --spreadsheetTitle=<value>  (required) Title of the spreadsheet
 
 AUTHENTICATION FLAGS
@@ -55,8 +59,8 @@ Copy a spreadsheet into a new one through the Drive API (drive.file scope). Unde
 
 ```
 USAGE
-  $ google-sheet spreadsheet:copy -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [--title <value>]
+  $ google-sheet spreadsheet:copy -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [--title <value>]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -64,6 +68,9 @@ FLAGS
                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput              Get the raw output as a JSON string
   -s, --spreadsheetId=<value>  (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
+      --redacted               [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                               from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                               counts, statuses and outcome states are kept.
       --title=<value>          Title of the new spreadsheet (the source title is inherited when omitted)
 
 AUTHENTICATION FLAGS
@@ -98,8 +105,8 @@ Export a spreadsheet to a local PDF or XLSX file through the Drive API (drive.fi
 
 ```
 USAGE
-  $ google-sheet spreadsheet:export -s <value> --format pdf|xlsx -o <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f
-    <value>] [--useOauth] [--clientSecretFile <value>] [--overwrite]
+  $ google-sheet spreadsheet:export -s <value> --format pdf|xlsx -o <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p
+    <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>] [--overwrite]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -111,6 +118,9 @@ FLAGS
       --format=<option>        (required) Export format
                                <options: pdf|xlsx>
       --overwrite              Replace an existing output file (default: refuse)
+      --redacted               [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                               from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                               counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -146,8 +156,8 @@ Get info for a specific spreadsheet
 
 ```
 USAGE
-  $ google-sheet spreadsheet:get -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>]
+  $ google-sheet spreadsheet:get -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -155,6 +165,9 @@ FLAGS
                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput              Get the raw output as a JSON string
   -s, --spreadsheetId=<value>  (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
+      --redacted               [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                               from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                               counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -178,14 +191,67 @@ EXAMPLES
 
 _See code: [src/commands/spreadsheet/get.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/get.ts)_
 
+## `google-sheet spreadsheet:list`
+
+List spreadsheets visible to this app via the Drive API (discovery). Uses the drive.file scope: only files this app created or has opened are listed — an empty result does not prove a spreadsheet is absent. Duplicate titles stay separate rows; nothing is ever selected automatically, pick an id yourself. OAuth tokens issued before drive.file was added must re-run `gsheet auth:login`.
+
+```
+USAGE
+  $ google-sheet spreadsheet:list [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
+    [--clientSecretFile <value>] [--exact --name <value>] [--pageSize <value>] [--pageToken <value> | --all]
+
+FLAGS
+  -h, --help               Show CLI help.
+  -j, --json               Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                           Success output is unchanged - use --rawOutput for JSON success.
+  -r, --rawOutput          Get the raw output as a JSON string
+      --all                Page through every result, aggregated into one listing (safety bound: 1000 files)
+      --exact              Match the whole title exactly instead of a substring (requires --name)
+      --name=<value>       Title fragment to match (partial match); without it every visible spreadsheet is listed
+      --pageSize=<value>   Files per page (default 50, bounded to 1-100)
+      --pageToken=<value>  Continuation token from a previous listing (nextPageToken)
+      --redacted           [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials from
+                           error envelopes and dry-run diagnostics before they are written. Coordinates, counts,
+                           statuses and outcome states are kept.
+
+AUTHENTICATION FLAGS
+  -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
+                                  GSHEET_CLIENT_EMAIL env variable if not provided.
+  -f, --credentialsFile=<value>   [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
+                                  credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
+                                  clientEmail and privateKey flags take precedence.
+  -p, --privateKey=<value>        [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
+                                  GSHEET_PRIVATE_KEY env variable if not provided.
+      --clientSecretFile=<value>  [env: GSHEET_CLIENT_SECRET_FILE] Path to OAuth 2.0 client_secret.json (Desktop App
+                                  type)
+      --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
+
+DESCRIPTION
+  List spreadsheets visible to this app via the Drive API (discovery). Uses the drive.file scope: only files this app
+  created or has opened are listed — an empty result does not prove a spreadsheet is absent. Duplicate titles stay
+  separate rows; nothing is ever selected automatically, pick an id yourself. OAuth tokens issued before drive.file was
+  added must re-run `gsheet auth:login`.
+
+EXAMPLES
+  $ gsheet spreadsheet:list
+
+  $ gsheet spreadsheet:list --name "Report 2026" --rawOutput
+
+  $ gsheet spreadsheet:list --name "Report" --pageSize 100 --all
+
+  $ gsheet spreadsheet:list --name "Report 2026" --exact
+```
+
+_See code: [src/commands/spreadsheet/list.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/list.ts)_
+
 ## `google-sheet spreadsheet:permissions`
 
 List the sharing permissions on the spreadsheet (Drive API, drive.file scope).
 
 ```
 USAGE
-  $ google-sheet spreadsheet:permissions -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>]
+  $ google-sheet spreadsheet:permissions -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -193,6 +259,9 @@ FLAGS
                                Success output is unchanged - use --rawOutput for JSON success.
   -r, --rawOutput              Get the raw output as a JSON string
   -s, --spreadsheetId=<value>  (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
+      --redacted               [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                               from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                               counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -223,9 +292,9 @@ Share the spreadsheet with users, a domain, or anyone with the link. Uses the Dr
 
 ```
 USAGE
-  $ google-sheet spreadsheet:share -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [--email <value>... | --domain <value> | --anyone] [--type user|group|domain|anyone]
-    [--role reader|commenter|writer] [--message <value> --notify]
+  $ google-sheet spreadsheet:share -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [--email <value>... | --domain <value> | --anyone] [--type
+    user|group|domain|anyone] [--role reader|commenter|writer] [--message <value> --notify]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -238,6 +307,9 @@ FLAGS
       --email=<value>...       Email address to grant access (repeatable)
       --message=<value>        Message attached to the notification email (requires --notify)
       --notify                 Send Google notification email (default: off — agents should not spam)
+      --redacted               [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                               from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                               counts, statuses and outcome states are kept.
       --role=<option>          [default: reader] Access role
                                <options: reader|commenter|writer>
       --type=<option>          Grantee type (inferred from --email/--domain/--anyone when omitted)
@@ -278,8 +350,8 @@ Remove a sharing permission from the spreadsheet, by permission id or grantee em
 
 ```
 USAGE
-  $ google-sheet spreadsheet:unshare -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [--permissionId <value> | --email <value>]
+  $ google-sheet spreadsheet:unshare -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [--permissionId <value> | --email <value>]
 
 FLAGS
   -h, --help                   Show CLI help.
@@ -289,6 +361,9 @@ FLAGS
   -s, --spreadsheetId=<value>  (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
       --email=<value>          Grantee email to remove (resolved via the permission list)
       --permissionId=<value>   Permission id from spreadsheet:permissions
+      --redacted               [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                               from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                               counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the

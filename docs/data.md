@@ -8,6 +8,7 @@ Manage data in worksheet
 * [`google-sheet data:batch-get`](#google-sheet-databatch-get)
 * [`google-sheet data:batch-update [DATA]`](#google-sheet-databatch-update-data)
 * [`google-sheet data:clear`](#google-sheet-dataclear)
+* [`google-sheet data:export-csv`](#google-sheet-dataexport-csv)
 * [`google-sheet data:find`](#google-sheet-datafind)
 * [`google-sheet data:get`](#google-sheet-dataget)
 * [`google-sheet data:schema`](#google-sheet-dataschema)
@@ -21,9 +22,9 @@ Append cells with the specified data after the last row in starting col (legacy 
 
 ```
 USAGE
-  $ google-sheet data:append [DATA] -t <value> -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [--minCol <value>] [-i <value>] [--inputFormat
-    json|csv] [--dryRun]
+  $ google-sheet data:append [DATA] -t <value> -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>]
+    [-f <value>] [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [--minCol <value>] [-i <value>]
+    [--inputFormat json|csv] [--dryRun]
 
 ARGUMENTS
   [DATA]  The data to be used as a JSON string - nested array [["1", "2", "3"]]
@@ -43,6 +44,9 @@ FLAGS
       --inputFormat=<option>       Format of input file ("json" or "csv")
                                    <options: json|csv>
       --minCol=<value>             [default: 1] The optional starting col of the operation
+      --redacted                   [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                   from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                   counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -79,8 +83,8 @@ Append table data using native Google Sheets values.append API (prevents client-
 
 ```
 USAGE
-  $ google-sheet data:append-table [DATA] -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [-t <value>] [--range <value>] [-i <value>] [--inputFormat json|csv] [-v
+  $ google-sheet data:append-table [DATA] -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [-t <value>] [--range <value>] [-i <value>] [--inputFormat json|csv] [-v
     RAW|USER_ENTERED] [--insertDataOption OVERWRITE|INSERT_ROWS]
 
 ARGUMENTS
@@ -103,6 +107,9 @@ FLAGS
                                    "INSERT_ROWS" (inserts new rows)
                                    <options: OVERWRITE|INSERT_ROWS>
       --range=<value>              Specific table range to search for existing data table (e.g. "Sheet1!A1")
+      --redacted                   [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                   from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                   counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -135,9 +142,10 @@ Fetch cell data across multiple ranges in a single batch request
 
 ```
 USAGE
-  $ google-sheet data:batch-get -s <value> --ranges <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [--valueRenderOption FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA]
-    [--dateTimeRenderOption FORMATTED_STRING|SERIAL_NUMBER] [--chunkSize <value>]
+  $ google-sheet data:batch-get -s <value> --ranges <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>]
+    [-f <value>] [--useOauth] [--clientSecretFile <value>] [--valueRenderOption
+    FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA] [--dateTimeRenderOption FORMATTED_STRING|SERIAL_NUMBER] [--chunkSize
+    <value>]
 
 FLAGS
   -h, --help                           Show CLI help.
@@ -151,6 +159,9 @@ FLAGS
                                        <options: FORMATTED_STRING|SERIAL_NUMBER>
       --ranges=<value>                 (required) JSON array of A1 range strings to query (e.g. '["Sheet1!A1:B10",
                                        "Sheet2!C1:D5"]')
+      --redacted                       [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and
+                                       credentials from error envelopes and dry-run diagnostics before they are written.
+                                       Coordinates, counts, statuses and outcome states are kept.
       --valueRenderOption=<option>     [default: FORMATTED_VALUE] Determines how values should be rendered in the output
                                        <options: FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA>
 
@@ -183,8 +194,8 @@ Update cell data across multiple ranges in a single batch request
 
 ```
 USAGE
-  $ google-sheet data:batch-update [DATA] -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
-    [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [-i <value>] [--inputFormat json] [--dryRun]
+  $ google-sheet data:batch-update [DATA] -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [-i <value>] [--inputFormat json] [--dryRun]
     [--overwriteFormulas] [--chunkByteSize <value>] [--maxRowsPerChunk <value>]
 
 ARGUMENTS
@@ -206,6 +217,9 @@ FLAGS
                                    <options: json>
       --maxRowsPerChunk=<value>    Maximum rows per payload chunk
       --overwriteFormulas          Allow overwriting existing formula cells
+      --redacted                   [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                   from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                   counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -234,23 +248,35 @@ _See code: [src/commands/data/batch-update.ts](https://github.com/jroehl/google-
 
 ## `google-sheet data:clear`
 
-Clear cell values in an explicitly bounded range, keeping every other cell property (values-only clear)
+Clear cell values in an explicitly bounded range, keeping every other cell property (values-only clear). With --workbook the clear runs on a local XLSX file instead of Google Sheets.
 
 ```
 USAGE
-  $ google-sheet data:clear -t <value> -s <value> --range <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f
-    <value>] [--useOauth] [--clientSecretFile <value>] [--dryRun] [--overwriteFormulas]
+  $ google-sheet data:clear --range <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>]
+    [--useOauth] [--clientSecretFile <value>] [-t <value>] [-s <value>] [--workbook <value>] [-o <value>] [--inPlace]
+    [--discardUnsupported] [--dryRun] [--overwriteFormulas]
 
 FLAGS
   -h, --help                    Show CLI help.
   -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
                                 Success output is unchanged - use --rawOutput for JSON success.
+  -o, --output=<value>          Destination path for the modified XLSX file (without it and without --inPlace the
+                                mutation is refused unless --dryRun)
   -r, --rawOutput               Get the raw output as a JSON string
-  -s, --spreadsheetId=<value>   (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
-  -t, --worksheetTitle=<value>  (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
+  -s, --spreadsheetId=<value>   [env: SPREADSHEET_ID] ID of the spreadsheet to use (Google Sheets target)
+  -t, --worksheetTitle=<value>  [env: WORKSHEET_TITLE] Title of the worksheet to use (Google Sheets target; also selects
+                                the sheet inside --workbook)
+      --discardUnsupported      Allow saving a workbook whose unsupported features (charts, pivot tables, macros) would
+                                be dropped by the local engine
       --dryRun                  Preview the clear without modifying the worksheet
+      --inPlace                 Modify the --workbook file in place (a .bak backup is written first)
       --overwriteFormulas       Allow the clear to overwrite cells that contain formulas
       --range=<value>           (required) A1 range to clear; must be bounded on both axes (e.g. "Sheet1!A1:D20")
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
+      --workbook=<value>        Path to a local .xlsx workbook to mutate instead of the Google Sheets target. Long name
+                                only: the shared short -f belongs to --credentialsFile
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -265,7 +291,8 @@ AUTHENTICATION FLAGS
       --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
 
 DESCRIPTION
-  Clear cell values in an explicitly bounded range, keeping every other cell property (values-only clear)
+  Clear cell values in an explicitly bounded range, keeping every other cell property (values-only clear). With
+  --workbook the clear runs on a local XLSX file instead of Google Sheets.
 
 EXAMPLES
   $ gsheet data:clear --spreadsheetId=<spreadsheetId> --worksheetTitle=<worksheetTitle> --range="Sheet1!A2:D20"
@@ -273,9 +300,80 @@ EXAMPLES
 
   $ gsheet data:clear --spreadsheetId=<spreadsheetId> --worksheetTitle=<worksheetTitle> --range="Sheet1!A2:D20" --dryRun
   Clear preview (dry run): 76 cells in "Sheet1!A2:D20" would be cleared
+
+  $ gsheet data:clear --workbook=template.xlsx --range="Functional effort!A8:J30" --inPlace
 ```
 
 _See code: [src/commands/data/clear.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/clear.ts)_
+
+## `google-sheet data:export-csv`
+
+Export worksheet data as deterministic RFC 4180 CSV, from a Google Sheets worksheet or a local XLSX workbook. Cell rendering is selectable (raw values, formatted display strings, or formula text where the backend stores it), and the injection policy for string cells is explicit: safe (default) prefixes dangerous leading characters with an apostrophe, preserve emits them byte-faithfully and says so in the receipt. Local XLSX formula results are the cached values from the last save by the producing application - they are never recalculated.
+
+```
+USAGE
+  $ google-sheet data:export-csv [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
+    [--clientSecretFile <value>] [-s <value>] [-t <value>] [--range <value>] [--workbook <value>] [--mode
+    raw|formatted|formula] [--injection safe|preserve] [-o <value>] [--overwrite]
+
+FLAGS
+  -h, --help                    Show CLI help.
+  -j, --json                    Report failures as a machine-readable JSON envelope on stderr (exit code 1 on failure).
+                                Success output is unchanged - use --rawOutput for JSON success.
+  -o, --output=<value>          Path of the CSV file to write atomically (an existing file needs --overwrite). Without
+                                it, the CSV goes to stdout and no receipt is printed
+  -r, --rawOutput               Get the raw output as a JSON string
+  -s, --spreadsheetId=<value>   [env: SPREADSHEET_ID] ID of the spreadsheet to export (Google Sheets source)
+  -t, --worksheetTitle=<value>  [env: WORKSHEET_TITLE] Title of the worksheet to export (Google Sheets source)
+      --injection=<option>      [default: safe] Formula-injection policy for string cells: "safe" prefixes dangerous
+                                leading characters (=, +, -, @, tab, CR) with an apostrophe; "preserve" emits them
+                                byte-faithfully and warns in the receipt
+                                <options: safe|preserve>
+      --mode=<option>           [default: raw] Cell rendering: "raw" machine values (default), "formatted" display
+                                strings, "formula" formula text where the backend stores it (XLSX always reports cached
+                                formula results)
+                                <options: raw|formatted|formula>
+      --overwrite               Replace an existing output file (default: refuse)
+      --range=<value>           A1 range to export, e.g. "Sheet1!A1:D10" (optional for the Google Sheets source, where
+                                it bounds the used range of --worksheetTitle; required with --workbook)
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
+      --workbook=<value>        Path to a local .xlsx workbook to export instead of the Google Sheets source. Long name
+                                only: the shared short -f belongs to --credentialsFile
+
+AUTHENTICATION FLAGS
+  -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
+                                  GSHEET_CLIENT_EMAIL env variable if not provided.
+  -f, --credentialsFile=<value>   [env: GSHEET_CREDENTIALS_FILE] Path to the service account JSON file to read the
+                                  credentials from. Uses the GSHEET_CREDENTIALS_FILE env variable if not provided. The
+                                  clientEmail and privateKey flags take precedence.
+  -p, --privateKey=<value>        [env: GSHEET_PRIVATE_KEY] The private key to use for authentication. Uses the
+                                  GSHEET_PRIVATE_KEY env variable if not provided.
+      --clientSecretFile=<value>  [env: GSHEET_CLIENT_SECRET_FILE] Path to OAuth 2.0 client_secret.json (Desktop App
+                                  type)
+      --useOauth                  [env: GSHEET_USE_OAUTH] Use OAuth 2.0 user authentication instead of service account
+
+DESCRIPTION
+  Export worksheet data as deterministic RFC 4180 CSV, from a Google Sheets worksheet or a local XLSX workbook. Cell
+  rendering is selectable (raw values, formatted display strings, or formula text where the backend stores it), and the
+  injection policy for string cells is explicit: safe (default) prefixes dangerous leading characters with an
+  apostrophe, preserve emits them byte-faithfully and says so in the receipt. Local XLSX formula results are the cached
+  values from the last save by the producing application - they are never recalculated.
+
+EXAMPLES
+  $ gsheet data:export-csv --spreadsheetId=<spreadsheetId> --worksheetTitle=<worksheetTitle> --output=./data.csv
+  Exported 3 row(s) x 2 column(s) from <spreadsheetId>/Sheet1 (Sheet1!A1:B3) to ./data.csv (48 bytes, mode: raw, injection: safe, transformed cells: 0)
+
+  $ gsheet data:export-csv --workbook=./report.xlsx --range='Sheet1!A1:D10' --mode=formatted --output=./report.csv --overwrite
+  Exported 10 row(s) x 4 column(s) from ./report.xlsx (Sheet1!A1:D10) to ./report.csv (312 bytes, mode: formatted, injection: safe, transformed cells: 1)
+
+  $ gsheet data:export-csv --spreadsheetId=<spreadsheetId> --worksheetTitle=<worksheetTitle> --range=A1:B10 --mode=formula --injection=preserve
+  =B2*2
+  =SUM(A1:A10)
+```
+
+_See code: [src/commands/data/export-csv.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/export-csv.ts)_
 
 ## `google-sheet data:find`
 
@@ -283,10 +381,10 @@ Locate cells matching a condition and return their A1 coordinates. Pure read: sc
 
 ```
 USAGE
-  $ google-sheet data:find -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>] [--output
-    csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [--range <value>] [--equals <value> | --contains
-    <value> | --regex <value>] [--column <value> | --header <value>] [--ignoreCase] [--valueRenderOption
+  $ google-sheet data:find -s <value> -t <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>]
+    [--output csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [--range <value>] [--equals <value> |
+    --contains <value> | --regex <value>] [--column <value> | --header <value>] [--ignoreCase] [--valueRenderOption
     FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA] [--dateTimeRenderOption FORMATTED_STRING|SERIAL_NUMBER] [--limit <value>]
     [--first] [--byRow]
 
@@ -318,6 +416,9 @@ FLAGS
       --output=<option>                output in a more machine friendly format
                                        <options: csv|json|yaml>
       --range=<value>                  The A1 range bounding the scan (default: whole worksheet)
+      --redacted                       [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and
+                                       credentials from error envelopes and dry-run diagnostics before they are written.
+                                       Coordinates, counts, statuses and outcome states are kept.
       --regex=<value>                  Match cells against this regular expression
       --sort=<value>                   property to sort by (prepend '-' for descending)
       --valueRenderOption=<option>     [default: FORMATTED_VALUE] Determines how cell values are rendered before
@@ -358,11 +459,11 @@ Returns cell data
 
 ```
 USAGE
-  $ google-sheet data:get -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>] [--output
-    csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [-w] [--range <value>] [--minRow <value>] [--minCol
-    <value>] [--maxRow <value>] [--maxCol <value>] [--valueRenderOption FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA]
-    [--dateTimeRenderOption FORMATTED_STRING|SERIAL_NUMBER]
+  $ google-sheet data:get -s <value> -t <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>]
+    [--output csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [-w] [--range <value>] [--minRow <value>]
+    [--minCol <value>] [--maxRow <value>] [--maxCol <value>] [--valueRenderOption
+    FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA] [--dateTimeRenderOption FORMATTED_STRING|SERIAL_NUMBER]
 
 FLAGS
   -h, --help                           Show CLI help.
@@ -388,6 +489,9 @@ FLAGS
       --output=<option>                output in a more machine friendly format
                                        <options: csv|json|yaml>
       --range=<value>                  The range to use to query the cells
+      --redacted                       [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and
+                                       credentials from error envelopes and dry-run diagnostics before they are written.
+                                       Coordinates, counts, statuses and outcome states are kept.
       --sort=<value>                   property to sort by (prepend '-' for descending)
       --valueRenderOption=<option>     [default: FORMATTED_VALUE] Determines how values should be rendered in the output
                                        <options: FORMATTED_VALUE|UNFORMATTED_VALUE|FORMULA>
@@ -423,10 +527,10 @@ Discover the column schema of a worksheet (read-only)
 
 ```
 USAGE
-  $ google-sheet data:schema -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>] [--output
-    csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [--minRow <value>] [--minCol <value>] [--maxRow
-    <value>] [--maxCol <value>]
+  $ google-sheet data:schema -s <value> -t <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>]
+    [--output csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [--minRow <value>] [--minCol <value>]
+    [--maxRow <value>] [--maxCol <value>]
 
 FLAGS
   -h, --help                    Show CLI help.
@@ -447,6 +551,9 @@ FLAGS
       --no-truncate             do not truncate output to fit screen
       --output=<option>         output in a more machine friendly format
                                 <options: csv|json|yaml>
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
       --sort=<value>            property to sort by (prepend '-' for descending)
 
 AUTHENTICATION FLAGS
@@ -486,9 +593,9 @@ Updates cells with the specified data
 
 ```
 USAGE
-  $ google-sheet data:update [DATA] -t <value> -s <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [--minRow <value>] [--minCol <value>] [-i <value>]
-    [--inputFormat json|csv] [--dryRun]
+  $ google-sheet data:update [DATA] -t <value> -s <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>]
+    [-f <value>] [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [--minRow <value>] [--minCol <value>]
+    [-i <value>] [--inputFormat json|csv] [--dryRun]
 
 ARGUMENTS
   [DATA]  The data to be used as a JSON string - nested array [["1", "2", "3"]]
@@ -509,6 +616,9 @@ FLAGS
                                    <options: json|csv>
       --minCol=<value>             [default: 1] The optional starting col of the operation
       --minRow=<value>             [default: 1] The optional starting row of the operation
+      --redacted                   [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                   from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                   counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -544,9 +654,9 @@ Upsert rows keyed by one column: existing keys update the supplied cells only, n
 
 ```
 USAGE
-  $ google-sheet data:upsert [DATA] -t <value> -s <value> --key <value> [-h] [-r] [-j] [-c <value>] [-p <value>]
-    [-f <value>] [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [--range <value>] [-i <value>]
-    [--inputFormat json|csv] [--dryRun] [--overwriteFormulas]
+  $ google-sheet data:upsert [DATA] -t <value> -s <value> --key <value> [-h] [-r] [-j] [--redacted] [-c <value>]
+    [-p <value>] [-f <value>] [--useOauth] [--clientSecretFile <value>] [-v RAW|USER_ENTERED] [--range <value>] [-i
+    <value>] [--inputFormat json|csv] [--dryRun] [--overwriteFormulas]
 
 ARGUMENTS
   [DATA]  The data to be used as a JSON string - nested array [["1", "2", "3"]]
@@ -570,6 +680,9 @@ FLAGS
       --overwriteFormulas          Allow updates to overwrite existing formulas in changed cells
       --range=<value>              A1 range of the existing table including its header row (e.g. "Sheet1!A1:F100");
                                    defaults to the whole worksheet grid
+      --redacted                   [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                   from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                   counts, statuses and outcome states are kept.
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -604,10 +717,10 @@ Validates worksheet data against a TableSchema (read-only)
 
 ```
 USAGE
-  $ google-sheet data:validate -s <value> -t <value> [-h] [-r] [-j] [-c <value>] [-p <value>] [-f <value>]
-    [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>] [--output
-    csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [--schema <value> | --schemaFile <value>] [--minRow
-    <value>] [--minCol <value>] [--maxRow <value>] [--maxCol <value>]
+  $ google-sheet data:validate -s <value> -t <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
+    <value>] [--useOauth] [--clientSecretFile <value>] [--columns <value> | -x] [--sort <value>] [--filter <value>]
+    [--output csv|json|yaml |  | [--csv | --no-truncate]] [--no-header | ] [--schema <value> | --schemaFile <value>]
+    [--minRow <value>] [--minCol <value>] [--maxRow <value>] [--maxCol <value>]
 
 FLAGS
   -h, --help                    Show CLI help.
@@ -628,6 +741,9 @@ FLAGS
       --no-truncate             do not truncate output to fit screen
       --output=<option>         output in a more machine friendly format
                                 <options: csv|json|yaml>
+      --redacted                [env: GSHEET_REDACTED] Strip cell contents, formulas, incoming values and credentials
+                                from error envelopes and dry-run diagnostics before they are written. Coordinates,
+                                counts, statuses and outcome states are kept.
       --schema=<value>          The TableSchema as a JSON string
       --schemaFile=<value>      Path to a TableSchema JSON file, or "-" for stdin
       --sort=<value>            property to sort by (prepend '-' for descending)

@@ -57,6 +57,8 @@ export interface ReportRunOptions {
   dryRun?: boolean;
   /** Permit overwriting existing formula cells in target */
   overwriteFormulas?: boolean;
+  /** Permit saving a workbook whose unsupported features would be dropped */
+  discardUnsupported?: boolean;
 }
 
 export interface ReportRunReceipt {
@@ -251,6 +253,7 @@ export async function runReport(options: ReportRunOptions): Promise<ReportRunRec
       xlsxSaved = await wb.save(filePath, {
         overwrite,
         inPlace,
+        allowUnsupportedFeatures: options.discardUnsupported,
       });
     }
   } else if (options.target.targetSpreadsheet) {

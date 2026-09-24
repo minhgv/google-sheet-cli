@@ -3,7 +3,7 @@ import { FlagInput } from '@oclif/core/interfaces';
 import { ux } from '@oclif/core/ux';
 import { createInterface } from 'readline';
 import { normalizeCredentials } from './credentials';
-import { GSheetError, GSheetErrorCode, hasTransportShape, toErrorEnvelope } from './cli-errors';
+import { GSheetError, GSheetErrorCode, hasTransportShape, isRedactionEnabled, redactDiagnostic, setRedactionEnabled, toErrorEnvelope } from './cli-errors';
 import * as factory from './factory';
 import GoogleSheet, { GoogleSheetCli } from './google-sheet';
 
@@ -20,6 +20,53 @@ export const worksheetTitle = Flags.string({
   required: true,
   env: 'WORKSHEET_TITLE',
 });
+
+/**
+ * Optional variants of the shared required flags for dual-backend commands: a
+ * `--workbook` invocation must not be forced to name a spreadsheet, and `-t`
+ * doubles as the sheet selector inside a local workbook. Same chars and env
+ * bindings as the shared definitions (the data:export-csv precedent).
+ */
+export const optionalSpreadsheetId = Flags.string({
+  char: 's',
+  description: 'ID of the spreadsheet to use (Google Sheets target)',
+  required: false,
+  env: 'SPREADSHEET_ID',
+});
+
+export const optionalWorksheetTitle = Flags.string({
+  char: 't',
+  description: 'Title of the worksheet to use (Google Sheets target; also selects the sheet inside --workbook)',
+  required: false,
+  env: 'WORKSHEET_TITLE',
+});
+
+/**
+ * Local-workbook target flags shared by every dual-backend mutation command.
+ * `--workbook` selects the local backend; the mutation lands on `--output` or
+ * `--inPlace`, never implicitly on the source file.
+ */
+export const workbookTargetFlags = {
+  workbook: Flags.string({
+    description:
+      'Path to a local .xlsx workbook to mutate instead of the Google Sheets target. Long name only: the shared short -f belongs to --credentialsFile',
+    required: false,
+  }),
+  output: Flags.string({
+    char: 'o',
+    description: 'Destination path for the modified XLSX file (without it and without --inPlace the mutation is refused unless --dryRun)',
+    required: false,
+  }),
+  inPlace: Flags.boolean({
+    description: 'Modify the --workbook file in place (a .bak backup is written first)',
+    required: false,
+  }),
+  discardUnsupported: Flags.boolean({
+    description:
+      'Allow saving a workbook whose unsupported features (charts, pivot tables, macros) would be dropped by the local engine',
+    required: false,
+  }),
+};
 
 export const valueInputOption = Flags.string({
   char: 'v',
@@ -102,6 +149,7 @@ export const optionalData = Args.string({
 export interface CommonFlags extends GoogleAuthFlags {
   rawOutput?: boolean;
   json?: boolean;
+  redacted?: boolean;
   help?: void;
 }
 
@@ -344,6 +392,13 @@ export default abstract class extends Command {
       default: false,
       required: false,
     }),
+    redacted: Flags.boolean({
+      description:
+        'Strip cell contents, formulas, incoming values and credentials from error envelopes and dry-run diagnostics before they are written. Coordinates, counts, statuses and outcome states are kept.',
+      default: false,
+      required: false,
+      env: 'GSHEET_REDACTED',
+    }),
     ...googleAuthFlags,
   } as FlagInput<CommonFlags>;
   async start(message: string) {
@@ -360,7 +415,10 @@ export default abstract class extends Command {
 
   async logRaw(message: string, raw?: unknown) {
     if (this.rawLogs) {
-      this.log(JSON.stringify(raw, null, 2));
+      // redaction strips cell contents/formulas/incoming values from receipts (dry-run
+      // previews included) before serialization; coordinates, counts and states survive
+      const payload = isRedactionEnabled() ? redactDiagnostic(raw) : raw;
+      this.log(JSON.stringify(payload, null, 2));
     } else {
       this.log(message);
     }
@@ -372,6 +430,9 @@ export default abstract class extends Command {
     const flags = parsed.flags as unknown as CommonFlags;
     this.rawLogs = !!flags?.rawOutput;
     this.jsonFailures = !!flags?.json;
+    // redaction must be on before any command logic (and before the auth errors init itself
+    // can throw) so envelopes for those failures are already stripped
+    setRedactionEnabled(Boolean(flags?.redacted));
     this.gsheet = await resolveGoogleSheetAuth(flags, { prompt: true });
   }
 

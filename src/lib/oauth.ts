@@ -1,13 +1,25 @@
 import { OAuth2Client } from 'google-auth-library';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  unlinkSync,
+  renameSync,
+  chmodSync,
+  lstatSync,
+  statSync,
+} from 'fs';
+import { join, basename } from 'path';
+import { randomBytes } from 'crypto';
+import type { Stats } from 'fs';
 import { homedir } from 'os';
 import { URL } from 'url';
 import { log } from './log';
 
 const DEBUG_NAMESPACE = 'gsheet:oauth';
-const CONFIG_DIR = join(homedir(), '.config', 'google-sheet-cli');
+const CONFIG_DIR = process.env.GSHEET_CONFIG_DIR || join(homedir(), '.config', 'google-sheet-cli');
 export const TOKEN_PATH = join(CONFIG_DIR, 'token.json');
 export const CLIENT_SECRET_PATH = join(CONFIG_DIR, 'client_secret.json');
 
@@ -36,10 +48,22 @@ const debug = (message: string): void => log(DEBUG_NAMESPACE, message, true);
 
 /**
  * Ensure the config directory exists.
+ *
+ * A missing directory is created with mode 0o700. An existing directory that
+ * is more permissive than 0o700 is tightened best-effort; a chmod failure is
+ * non-fatal and leaves the directory as found.
  */
 const ensureConfigDir = (): void => {
   if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+    mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  } else if (process.platform !== 'win32') {
+    try {
+      if ((statSync(CONFIG_DIR).mode & 0o077) !== 0) {
+        chmodSync(CONFIG_DIR, 0o700);
+      }
+    } catch {
+      // Best-effort hardening only; never block token operations on it.
+    }
   }
 };
 
@@ -69,11 +93,49 @@ export const readClientSecret = (path?: string): ClientSecret => {
 
 /**
  * Save OAuth tokens to disk.
+ *
+ * The tokens are written to a uniquely named temporary file inside CONFIG_DIR
+ * with mode 0o600 and renamed over TOKEN_PATH, so readers never observe a
+ * partially written token file and the final file is owner-only by
+ * construction. If TOKEN_PATH is a symbolic link the save refuses (fail
+ * closed) rather than writing through the link to an unexpected destination.
  */
 export const saveTokens = (tokens: OAuthTokens): void => {
   ensureConfigDir();
-  writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), 'utf8');
-  debug(`Tokens saved to ${TOKEN_PATH}`);
+
+  // lstat (not stat): a symlinked TOKEN_PATH must be seen as itself. An
+  // absent path lstat-fails and falls through to the write, which surfaces
+  // any real error.
+  let tokenStat: Stats | undefined;
+  try {
+    tokenStat = lstatSync(TOKEN_PATH);
+  } catch {
+    tokenStat = undefined;
+  }
+  if (tokenStat?.isSymbolicLink()) {
+    throw new Error(
+      `Refusing to save tokens: ${TOKEN_PATH} is a symbolic link. ` +
+      'Remove the link (or point it at the intended file) and retry.'
+    );
+  }
+
+  const tempPath = join(
+    CONFIG_DIR,
+    `.${basename(TOKEN_PATH)}.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}.tmp`
+  );
+
+  try {
+    writeFileSync(tempPath, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
+    renameSync(tempPath, TOKEN_PATH);
+    debug(`Tokens saved to ${TOKEN_PATH}`);
+  } catch (error) {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // The temp file may never have been created; nothing left to clean.
+    }
+    throw error;
+  }
 };
 
 /**
@@ -82,6 +144,19 @@ export const saveTokens = (tokens: OAuthTokens): void => {
 export const loadTokens = (): OAuthTokens | null => {
   if (!existsSync(TOKEN_PATH)) {
     return null;
+  }
+
+  // Best-effort: tighten a token file left more permissive than 0o600 by an
+  // older version. Never chmod through a symlink; failures are non-fatal.
+  if (process.platform !== 'win32') {
+    try {
+      const tokenStat = lstatSync(TOKEN_PATH);
+      if (!tokenStat.isSymbolicLink() && (tokenStat.mode & 0o077) !== 0) {
+        chmodSync(TOKEN_PATH, 0o600);
+      }
+    } catch {
+      // Non-fatal; the read below proceeds regardless.
+    }
   }
 
   try {

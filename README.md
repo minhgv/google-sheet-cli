@@ -4,18 +4,19 @@ A simple helper cli to interact with google sheets.
 
 ## Features
 
-The fork provides **37 commands**. See [CHANGELOG.md](CHANGELOG.md) for the latest additions; the 2.x migration notes below describe the upstream platform release, not the fork's later feature set.
+The fork provides **40 commands**. See [CHANGELOG.md](CHANGELOG.md) for the latest additions; the 2.x migration notes below describe the upstream platform release, not the fork's later feature set.
 
 | Group | Commands | What it does |
 |---|---|---|
 | 🔐 Auth | `auth:login` `auth:logout` `auth:status` | OAuth 2.0 Desktop flow; token at `~/.config/google-sheet-cli/token.json` |
-| 📊 Data | `data:get` `data:append` `data:append-table` `data:update` `data:batch-get` `data:batch-update` `data:find` `data:schema` `data:validate` `data:clear` `data:upsert` | Read/write ranges; batch APIs; `--dryRun`, `--overwriteFormulas` guard, `--valueRenderOption`, file/stdin input; `data:find` locates cells by condition; `data:schema` discovers column schema (read-only); `data:validate` checks data against a TableSchema; `data:clear` clears bounded values; `data:upsert` updates-or-appends rows by key column |
-| 📄 Spreadsheet | `spreadsheet:add` `spreadsheet:get` `spreadsheet:share` `spreadsheet:permissions` `spreadsheet:unshare` `spreadsheet:copy` `spreadsheet:export` | Create/inspect spreadsheets; Drive-API sharing (`--email`/`--domain`/`--anyone`, `--role`, `--notify` off by default); `spreadsheet:copy` duplicates a spreadsheet; `spreadsheet:export` writes PDF/XLSX to a local file |
+| 📊 Data | `data:get` `data:append` `data:append-table` `data:update` `data:batch-get` `data:batch-update` `data:export-csv` `data:find` `data:schema` `data:validate` `data:clear` `data:upsert` | Read/write ranges; batch APIs; `--dryRun`, `--overwriteFormulas` guard, `--valueRenderOption`, file/stdin input; `data:find` locates cells by condition; `data:schema` discovers column schema (read-only); `data:validate` checks data against a TableSchema; `data:clear` clears bounded values; `data:upsert` updates-or-appends rows by key column; `data:export-csv` exports RFC 4180 CSV from a Sheets worksheet or a local `.xlsx` range (`--mode raw\|formatted\|formula`, `--injection safe\|preserve`) |
+| 📄 Spreadsheet | `spreadsheet:add` `spreadsheet:get` `spreadsheet:list` `spreadsheet:share` `spreadsheet:permissions` `spreadsheet:unshare` `spreadsheet:copy` `spreadsheet:export` | Create/inspect spreadsheets; Drive-API sharing (`--email`/`--domain`/`--anyone`, `--role`, `--notify` off by default); `spreadsheet:list` discovers Drive-visible spreadsheets (`drive.file` scope — an empty result never proves a file is absent); `spreadsheet:copy` duplicates a spreadsheet; `spreadsheet:export` writes PDF/XLSX to a local file |
 | 📑 Worksheet | `worksheet:add` `worksheet:get` `worksheet:remove` `worksheet:rename` `worksheet:copy` | Manage worksheets inside a spreadsheet; `worksheet:copy` copies a sheet into another spreadsheet |
 | 🎨 Format | `format:cells` `format:merge` | `userEnteredFormat` only — bold, colors, borders, number formats, merge; `--dryRun` |
 | 📐 Grid | `grid:insert` `grid:delete` `grid:hide` `grid:resize` `grid:freeze` | Structural row/column mutations; `grid:delete --dryRun` previews values about to be lost |
 | 📁 Workbook | `workbook:inspect` `workbook:read` `workbook:write` | Offline local .xlsx — no credentials, no network; atomic write + SHA-256 |
 | 📋 Report | `report:run` | Render a JSON report spec onto a sheet (finance/manpower/sales) |
+| 🧭 Meta | `capabilities` | Print the machine-readable capability document — per-backend operations, I/O forms, formula write-vs-recalculation semantics, destructive guards, mutation limits, fidelity exclusions — with no credentials and no flags |
 
 ## Migrating from 2.x
 
@@ -485,6 +486,33 @@ $ google-sheet spreadsheet:export -s <spreadsheetId> --format xlsx -o ./report.x
 
 Binary-safe and atomic: the bytes are written to a temporary file in the output directory and renamed into place, so a failure leaves no partial file and preserves any existing output. An existing file is only replaced with explicit `--overwrite` (refused before the network round-trip, re-checked after the bytes arrive). Two Drive-side limits apply: exports are capped at 10 MB — larger spreadsheets fail with Google's own error — and access stays within the `drive.file` scope, meaning only files this app created or has opened are reachable, never the whole Drive.
 
+#### `spreadsheet:list`: discover spreadsheets this app can see
+
+```sh-session
+$ google-sheet spreadsheet:list --name "Report 2026" --rawOutput
+{"files":[{"id":"1AbC...","name":"Report 2026","mimeType":"application/vnd.google-apps.spreadsheet"}],"nextPageToken":"...","visibilityNote":"Listing uses the drive.file OAuth scope: ..."}
+```
+
+Discovery runs through the Drive API under the `drive.file` scope: only spreadsheets this application created or has opened are listed, and every response carries a `visibilityNote` saying so — **an empty result does not prove a spreadsheet is absent**; address such files by ID. `--name` filters by substring (`--exact` for a whole-title match), `--pageSize` bounds a page (1–100, default 50), `--pageToken` continues a listing, and `--all` aggregates pages up to a 1,000-file safety bound, returning the outstanding token when it truncates. Duplicate titles stay separate rows and nothing is ever selected automatically — pick an `id` yourself. OAuth tokens issued before `drive.file` was added must re-run `auth:login`.
+
+#### `data:export-csv`: deterministic CSV from either backend
+
+```sh-session
+$ google-sheet data:export-csv --spreadsheetId <id> -t Sheet1 --output ./data.csv
+Exported 3 row(s) x 2 column(s) from <id>/Sheet1 (Sheet1!A1:B3) to ./data.csv (48 bytes, mode: raw, injection: safe, transformed cells: 0)
+$ google-sheet data:export-csv --workbook ./report.xlsx --range 'Sheet1!A1:D10' --mode formatted --output ./report.csv --overwrite
+```
+
+One source, exactly: `--spreadsheetId`/`--worksheetTitle` (optionally bounded by `--range`) for Google Sheets, or `--workbook <file.xlsx>` (with a required `--range`) for a local file. `--mode` selects the cell rendering — `raw` machine values (default), `formatted` display strings, `formula` formula text where the backend stores it — and `--injection` selects the formula-injection policy: `safe` (default) prefixes dangerous leading characters (`=`, `+`, `-`, `@`, tab, CR) with an apostrophe; `preserve` emits them byte-faithfully and says so in the receipt. Output is RFC 4180: with `--output` the file is written atomically (temp file + rename) and an existing file is replaced only with `--overwrite`, and the receipt (rows, columns, range, mode, policy, transformed cells, warnings) is printed; without `--output`, stdout carries only the CSV bytes and warnings go to stderr. Local XLSX formula results are the cached values from the last save by a real spreadsheet engine — never recalculated — and the warnings report how much of the export came from cache.
+
+#### `capabilities`: the machine-readable capability document
+
+```sh-session
+$ google-sheet capabilities | jq '.backends["local-xlsx"].formulaSemantics'
+```
+
+Prints a versioned JSON document — no credentials, no auth, no flags — describing what this build can do: per backend (`google-sheets`, `local-xlsx`) the supported operations, input and output forms, formula write-vs-recalculation semantics, destructive guards, mutation limits and local fidelity exclusions, plus the `drive.file` visibility boundary. Static support is not authorization: an operation listed there still needs valid credentials and permissions when it runs.
+
 ### Structured JSON Errors for Agents
 
 Any command can report failures as exactly one machine-readable envelope on stderr with exit code 1:
@@ -497,6 +525,8 @@ $ google-sheet data:get -s <spreadsheetId> --json
 - `--json`/`-j` turns on failure envelopes only — success output is unchanged. `--rawOutput`/`-r` prints success output as JSON too.
 - `code` is stable: `USAGE` (bad argv), `AUTH_REQUIRED`/`UNAUTHORIZED`/`FORBIDDEN` (auth), `NOT_FOUND`, `CONFLICT`, `REQUEST_INVALID` (request rejected), `RATE_LIMITED`, `UPSTREAM`, `NETWORK` (retryable — `RATE_LIMITED` carries `retryAfterMs` when Google sends a hint), `VALIDATION`, `SCHEMA_INVALID`, `DATA_INVALID` (data contracts), `INTERNAL`.
 - Coordinate-linked `issues` (`row`/`column`/`a1`/`field`/`code`/`message`/`value`) ride along on the envelope for `data:validate` violations and upsert rejections.
+- Multi-request writes (`data:batch-update`, `data:upsert`) may attach a `mutation` block on failure: per-request `outcomes` (`acknowledged`, `rejected`, `unknown`, `not-attempted`) with the logical A1 ranges, grid-growth effects tracked separately, the `phase` the failure happened in, and a conservative `retryGuidance` (`safe-replay`, `verify-then-replay`, `never-blind-replay`). States, ranges and counts only — never cell contents. `unknown` means the write may have landed; verify state before replaying anything.
+- `--redacted` (global flag) strips cell contents, formulas, incoming values and credentials from error envelopes and dry-run diagnostics before they are written — coordinates, counts, statuses and mutation outcome states survive. Enable it for unattended/CI runs; normal data reads and exports are unaffected.
 - Envelopes never contain credentials, request/response internals or arbitrary error objects; retry only what reports `retryable: true`, and never replay an ambiguous write without checking state first.
 - Errors raised before a command class loads, such as an unknown command or topic, still use oclif's human-readable output.
 
@@ -538,6 +568,10 @@ $ google-sheet workbook:write \
 * `--dryRun`: Calculates diffs and outputs the planned cell modifications without touching disk.
 * `--overwrite`: Explicitly confirms replacing an existing target file.
 * `--overwriteFormulas`: By default, writing static data over a cell containing a formula is **rejected** to prevent accidental destruction of workbook logic. Pass `--overwriteFormulas` only when formula replacement is intentional.
+
+#### 4. Structured Workbook Authoring: the ReportDocument (`workbook:write`)
+
+Beyond flat rows, `workbook:write` accepts a full ReportDocument JSON object (the same shape `report:run` renders): `sheets` are created when missing, each cell may be a scalar or a `{formula, result}` object, and presentation rides on the sheet object — per-column `numberFormats`, `freezeRows`, and `columnWidths`. Formulas are stored as formula cells together with the cached result you supply; they are **never recalculated** — there is no calculation engine — so consumers read what a real spreadsheet application last computed. Features the local engine cannot represent (VBA macros, charts, pivot tables, external links, …) are detected at load time, and a save that would drop them **refuses** (`--allowUnsupportedFeatures` to override) — nothing is silently discarded.
 
 ### Report Automation (`report:run`)
 
@@ -632,7 +666,7 @@ To guarantee reliability and prevent data corruption in automated pipelines, the
 
 ## Using with coding agents
 
-google-sheet-cli is built to be driven by coding agents: `workbook:*` and local `report:run` run with zero credentials and zero network calls, every command emits machine-readable output (`--rawOutput`/`-r`, `--csv`), and writes fail closed — formulas are never overwritten without an explicit `--overwriteFormulas`, and `--dryRun` previews any mutation with zero side effects. Failures are programmatically consumable too: `--json`/`-j` reports any failure as one structured envelope on stderr (stable `code`, safe `message`, `retryable`, coordinate-linked `issues`, exit code 1) while leaving success output unchanged — pair it with `--rawOutput`/`-r` when the agent wants success output as JSON as well. See [Structured JSON Errors for Agents](#structured-json-errors-for-agents).
+google-sheet-cli is built to be driven by coding agents: `workbook:*` and local `report:run` run with zero credentials and zero network calls, every command emits machine-readable output (`--rawOutput`/`-r`, `--csv`), and writes fail closed — formulas are never overwritten without an explicit `--overwriteFormulas`, and `--dryRun` previews any mutation with zero side effects. Failures are programmatically consumable too: `--json`/`-j` reports any failure as one structured envelope on stderr (stable `code`, safe `message`, `retryable`, coordinate-linked `issues`, typed `mutation` outcomes for multi-request writes, exit code 1) while leaving success output unchanged — pair it with `--rawOutput`/`-r` when the agent wants success output as JSON as well. `capabilities` prints a credential-free, versioned JSON document of everything this build can do — read it before scripting; `spreadsheet:list` discovers spreadsheets under the `drive.file` scope (an empty listing never proves a file is absent — address those by ID); `data:export-csv` produces deterministic RFC 4180 interchange from either backend; and `--redacted` strips data values from diagnostics for unattended runs. See [Structured JSON Errors for Agents](#structured-json-errors-for-agents).
 
 The repository ships an agent skill and an integration guide:
 
@@ -643,9 +677,10 @@ The repository ships an agent skill and an integration guide:
 # Command Topics
 
 * [`google-sheet auth`](docs/auth.md) - Authenticate with your Google account via OAuth 2.0
+* [`google-sheet capabilities`](docs/capabilities.md) - Print the machine-readable capability document: per backend (google-sheets, local-xlsx) the supported operations, input and output forms, formula write-vs-recalculation semantics, destructive guards, mutation limits and local fidelity exclusions. Credential-free.
 * [`google-sheet data`](docs/data.md) - Manage data in worksheet
 * [`google-sheet format`](docs/format.md) - Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten.
-* [`google-sheet grid`](docs/grid.md) - Delete rows or columns from a worksheet. Data after the deleted range shifts up/left. --dryRun previews the values about to be removed.
+* [`google-sheet grid`](docs/grid.md) - Delete rows or columns from a worksheet. Data after the deleted range shifts up/left. --dryRun previews the values about to be removed. With --workbook the delete runs on a local XLSX file instead of Google Sheets.
 * [`google-sheet help`](docs/help.md) - Display help for google-sheet.
 * [`google-sheet report`](docs/report.md) - Report automation runner and template generation
 * [`google-sheet spreadsheet`](docs/spreadsheet.md) - Manage spreadsheets
