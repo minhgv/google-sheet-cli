@@ -1,7 +1,7 @@
 {
   "name": "google-sheet-cli",
   "description": "A simple helper cli to interact with google sheets.",
-  "version": "0.0.0",
+  "version": "3.1.0",
   "bin": {
     "google-sheet": "./bin/run.js"
   },

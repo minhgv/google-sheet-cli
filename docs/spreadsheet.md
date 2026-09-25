@@ -51,7 +51,7 @@ EXAMPLES
   Spreadsheet "<spreadsheetTitle>" (<id>) successfully created > https://docs.google.com/spreadsheets/d/<id>/edit
 ```
 
-_See code: [src/commands/spreadsheet/add.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/add.ts)_
+_See code: [src/commands/spreadsheet/add.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/add.ts)_
 
 ## `google-sheet spreadsheet:copy`
 
@@ -97,7 +97,7 @@ EXAMPLES
   Spreadsheet "<id>" copied to "<sourceTitle>" (<newId>) > https://docs.google.com/spreadsheets/d/<newId>/edit
 ```
 
-_See code: [src/commands/spreadsheet/copy.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/copy.ts)_
+_See code: [src/commands/spreadsheet/copy.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/copy.ts)_
 
 ## `google-sheet spreadsheet:export`
 
@@ -148,7 +148,7 @@ EXAMPLES
   Exported spreadsheet <id> to /abs/path/report.xlsx (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, 23456 bytes)
 ```
 
-_See code: [src/commands/spreadsheet/export.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/export.ts)_
+_See code: [src/commands/spreadsheet/export.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/export.ts)_
 
 ## `google-sheet spreadsheet:get`
 
@@ -189,7 +189,7 @@ EXAMPLES
   Fetched "<spreadsheetTitle>" (<id>) > https://docs.google.com/spreadsheets/d/<id>/edit
 ```
 
-_See code: [src/commands/spreadsheet/get.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/get.ts)_
+_See code: [src/commands/spreadsheet/get.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/get.ts)_
 
 ## `google-sheet spreadsheet:list`
 
@@ -242,7 +242,7 @@ EXAMPLES
   $ gsheet spreadsheet:list --name "Report 2026" --exact
 ```
 
-_See code: [src/commands/spreadsheet/list.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/list.ts)_
+_See code: [src/commands/spreadsheet/list.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/list.ts)_
 
 ## `google-sheet spreadsheet:permissions`
 
@@ -284,7 +284,7 @@ EXAMPLES
   $ gsheet spreadsheet:permissions --spreadsheetId=<id> --rawOutput
 ```
 
-_See code: [src/commands/spreadsheet/permissions.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/permissions.ts)_
+_See code: [src/commands/spreadsheet/permissions.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/permissions.ts)_
 
 ## `google-sheet spreadsheet:share`
 
@@ -342,7 +342,7 @@ EXAMPLES
   $ gsheet spreadsheet:share --spreadsheetId=<id> --anyone --role reader
 ```
 
-_See code: [src/commands/spreadsheet/share.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/share.ts)_
+_See code: [src/commands/spreadsheet/share.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/share.ts)_
 
 ## `google-sheet spreadsheet:unshare`
 
@@ -386,4 +386,4 @@ EXAMPLES
   $ gsheet spreadsheet:unshare --spreadsheetId=<id> --email user@example.com
 ```
 
-_See code: [src/commands/spreadsheet/unshare.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/spreadsheet/unshare.ts)_
+_See code: [src/commands/spreadsheet/unshare.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/spreadsheet/unshare.ts)_

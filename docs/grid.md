@@ -74,7 +74,7 @@ EXAMPLES
   $ gsheet grid:delete --workbook=template.xlsx --dimension=ROWS --start=8 --count=2 --updateRefs --inPlace
 ```
 
-_See code: [src/commands/grid/delete.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/grid/delete.ts)_
+_See code: [src/commands/grid/delete.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/grid/delete.ts)_
 
 ## `google-sheet grid:freeze`
 
@@ -134,7 +134,7 @@ EXAMPLES
   $ gsheet grid:freeze --workbook=template.xlsx -t Sheet1 --rows=1 --columns=2 --inPlace
 ```
 
-_See code: [src/commands/grid/freeze.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/grid/freeze.ts)_
+_See code: [src/commands/grid/freeze.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/grid/freeze.ts)_
 
 ## `google-sheet grid:hide`
 
@@ -195,7 +195,7 @@ EXAMPLES
   $ gsheet grid:hide --workbook=template.xlsx -t Sheet1 --dimension=COLUMNS --start=2 --inPlace
 ```
 
-_See code: [src/commands/grid/hide.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/grid/hide.ts)_
+_See code: [src/commands/grid/hide.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/grid/hide.ts)_
 
 ## `google-sheet grid:insert`
 
@@ -267,7 +267,7 @@ EXAMPLES
   $ gsheet grid:insert --workbook=template.xlsx -t Sheet1 --dimension=ROWS --start=8 --count=3 --dryRun
 ```
 
-_See code: [src/commands/grid/insert.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/grid/insert.ts)_
+_See code: [src/commands/grid/insert.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/grid/insert.ts)_
 
 ## `google-sheet grid:resize`
 
@@ -330,4 +330,4 @@ EXAMPLES
   $ gsheet grid:resize --workbook=template.xlsx -t Sheet1 --dimension=COLUMNS --start=1 --count=4 --auto --inPlace
 ```
 
-_See code: [src/commands/grid/resize.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/grid/resize.ts)_
+_See code: [src/commands/grid/resize.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/grid/resize.ts)_

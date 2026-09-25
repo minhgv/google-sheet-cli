@@ -64,4 +64,4 @@ EXAMPLES
   $ gsheet report:run --template=templates/finance.json --sourceSpreadsheet=<sourceId> --ranges='["Sheet1!A1:Z100"]' --spreadsheetId=<targetId> --overwriteFormulas
 ```
 
-_See code: [src/commands/report/run.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/report/run.ts)_
+_See code: [src/commands/report/run.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/report/run.ts)_

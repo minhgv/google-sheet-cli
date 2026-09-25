@@ -32,7 +32,7 @@ EXAMPLES
   Authentication successful! Tokens saved to ~/.config/google-sheet-cli/token.json
 ```
 
-_See code: [src/commands/auth/login.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/auth/login.ts)_
+_See code: [src/commands/auth/login.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/auth/login.ts)_
 
 ## `google-sheet auth:logout`
 
@@ -50,7 +50,7 @@ EXAMPLES
   OAuth tokens removed from ~/.config/google-sheet-cli/token.json
 ```
 
-_See code: [src/commands/auth/logout.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/auth/logout.ts)_
+_See code: [src/commands/auth/logout.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/auth/logout.ts)_
 
 ## `google-sheet auth:status`
 
@@ -70,4 +70,4 @@ EXAMPLES
   Refresh token: available
 ```
 
-_See code: [src/commands/auth/status.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/auth/status.ts)_
+_See code: [src/commands/auth/status.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/auth/status.ts)_

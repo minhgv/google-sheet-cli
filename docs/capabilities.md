@@ -30,4 +30,4 @@ EXAMPLES
   $ gsheet capabilities | jq '.backends["local-xlsx"].formulaSemantics'
 ```
 
-_See code: [src/commands/capabilities.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/capabilities.ts)_
+_See code: [src/commands/capabilities.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/capabilities.ts)_

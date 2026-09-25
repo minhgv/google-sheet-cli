@@ -75,7 +75,7 @@ EXAMPLES
   Data successfully appended to "<worksheetTitle>"
 ```
 
-_See code: [src/commands/data/append.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/append.ts)_
+_See code: [src/commands/data/append.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/append.ts)_
 
 ## `google-sheet data:append-table [DATA]`
 
@@ -134,7 +134,7 @@ EXAMPLES
   $ gsheet data:append-table --spreadsheetId=<spreadsheetId> --range='Sheet1!A1' --input=- --inputFormat=json < table.json
 ```
 
-_See code: [src/commands/data/append-table.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/append-table.ts)_
+_See code: [src/commands/data/append-table.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/append-table.ts)_
 
 ## `google-sheet data:batch-get`
 
@@ -186,7 +186,7 @@ EXAMPLES
   $ gsheet data:batch-get --spreadsheetId=<spreadsheetId> --ranges='["Sheet1!A1:B10"]' --valueRenderOption=UNFORMATTED_VALUE
 ```
 
-_See code: [src/commands/data/batch-get.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/batch-get.ts)_
+_See code: [src/commands/data/batch-get.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/batch-get.ts)_
 
 ## `google-sheet data:batch-update [DATA]`
 
@@ -244,7 +244,7 @@ EXAMPLES
   $ gsheet data:batch-update --spreadsheetId=<spreadsheetId> --input=- < updates.json
 ```
 
-_See code: [src/commands/data/batch-update.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/batch-update.ts)_
+_See code: [src/commands/data/batch-update.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/batch-update.ts)_
 
 ## `google-sheet data:clear`
 
@@ -304,7 +304,7 @@ EXAMPLES
   $ gsheet data:clear --workbook=template.xlsx --range="Functional effort!A8:J30" --inPlace
 ```
 
-_See code: [src/commands/data/clear.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/clear.ts)_
+_See code: [src/commands/data/clear.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/clear.ts)_
 
 ## `google-sheet data:export-csv`
 
@@ -373,7 +373,7 @@ EXAMPLES
   =SUM(A1:A10)
 ```
 
-_See code: [src/commands/data/export-csv.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/export-csv.ts)_
+_See code: [src/commands/data/export-csv.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/export-csv.ts)_
 
 ## `google-sheet data:find`
 
@@ -451,7 +451,7 @@ EXAMPLES
   $ gsheet data:find --spreadsheetId=<id> --worksheetTitle=T1 --equals="Paid" --header="Status"
 ```
 
-_See code: [src/commands/data/find.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/find.ts)_
+_See code: [src/commands/data/find.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/find.ts)_
 
 ## `google-sheet data:get`
 
@@ -519,7 +519,7 @@ EXAMPLES
   A3   B3   C3
 ```
 
-_See code: [src/commands/data/get.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/get.ts)_
+_See code: [src/commands/data/get.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/get.ts)_
 
 ## `google-sheet data:schema`
 
@@ -585,7 +585,7 @@ EXAMPLES
   Flag    C       boolean (3)         0         ONE_OF_LIST (3)
 ```
 
-_See code: [src/commands/data/schema.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/schema.ts)_
+_See code: [src/commands/data/schema.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/schema.ts)_
 
 ## `google-sheet data:update [DATA]`
 
@@ -646,7 +646,7 @@ EXAMPLES
   Data successfully updated in "<worksheetTitle>"
 ```
 
-_See code: [src/commands/data/update.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/update.ts)_
+_See code: [src/commands/data/update.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/update.ts)_
 
 ## `google-sheet data:upsert [DATA]`
 
@@ -709,7 +709,7 @@ EXAMPLES
   $ gsheet data:upsert --spreadsheetId=<spreadsheetId> --worksheetTitle=<worksheetTitle> --key=id --input=- --inputFormat=json < rows.json
 ```
 
-_See code: [src/commands/data/upsert.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/upsert.ts)_
+_See code: [src/commands/data/upsert.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/upsert.ts)_
 
 ## `google-sheet data:validate`
 
@@ -773,4 +773,4 @@ EXAMPLES
   $ gsheet data:validate --spreadsheetId=<spreadsheetId> --worksheetTitle=<worksheetTitle> --schema='{"fields":[{"name":"Name","type":"string","required":true},{"name":"Amount","type":"decimal","min":0},{"name":"Code","type":"string","unique":true}]}'
 ```
 
-_See code: [src/commands/data/validate.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/data/validate.ts)_
+_See code: [src/commands/data/validate.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/data/validate.ts)_

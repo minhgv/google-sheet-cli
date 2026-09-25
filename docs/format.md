@@ -95,7 +95,7 @@ EXAMPLES
   $ gsheet format:cells --spreadsheetId=<id> --worksheetTitle=Report --input=style.json --dryRun
 ```
 
-_See code: [src/commands/format/cells.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/format/cells.ts)_
+_See code: [src/commands/format/cells.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/format/cells.ts)_
 
 ## `google-sheet format:merge`
 
@@ -157,4 +157,4 @@ EXAMPLES
   $ gsheet format:merge --workbook=template.xlsx -t "Functional effort" --range=B8:B12 --inPlace
 ```
 
-_See code: [src/commands/format/merge.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/format/merge.ts)_
+_See code: [src/commands/format/merge.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/format/merge.ts)_

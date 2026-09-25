@@ -232,7 +232,7 @@ $ npm install -g google-sheet-cli
 $ google-sheet COMMAND
 running command...
 $ google-sheet (--version)
-google-sheet-cli/0.0.0 darwin-arm64 node-v25.9.0
+google-sheet-cli/3.1.0 darwin-arm64 node-v25.9.0
 $ google-sheet --help [COMMAND]
 USAGE
   $ google-sheet COMMAND

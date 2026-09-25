@@ -58,7 +58,7 @@ EXAMPLES
   $ gsheet workbook:find --file=report.xlsx --regex="^ERR-" --range="Data!A1:K200"
 ```
 
-_See code: [src/commands/workbook/find.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/find.ts)_
+_See code: [src/commands/workbook/find.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/workbook/find.ts)_
 
 ## `google-sheet workbook:inspect`
 
@@ -83,7 +83,7 @@ EXAMPLES
   $ gsheet workbook:inspect --file=report.xlsx --rawOutput
 ```
 
-_See code: [src/commands/workbook/inspect.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/inspect.ts)_
+_See code: [src/commands/workbook/inspect.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/workbook/inspect.ts)_
 
 ## `google-sheet workbook:names [ACTION]`
 
@@ -123,7 +123,7 @@ EXAMPLES
   $ gsheet workbook:names --file=book.xlsx remove --name Amounts --inPlace
 ```
 
-_See code: [src/commands/workbook/names.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/names.ts)_
+_See code: [src/commands/workbook/names.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/workbook/names.ts)_
 
 ## `google-sheet workbook:read`
 
@@ -156,7 +156,7 @@ EXAMPLES
   $ gsheet workbook:read --file=report.xlsx --range='Sheet1!A1:D10' --rawOutput
 ```
 
-_See code: [src/commands/workbook/read.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/read.ts)_
+_See code: [src/commands/workbook/read.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/workbook/read.ts)_
 
 ## `google-sheet workbook:write [DATA]`
 
@@ -202,4 +202,4 @@ EXAMPLES
   $ gsheet workbook:write --file=existing.xlsx --inPlace --input=rows.json --startCell="B5" --overwriteFormulas
 ```
 
-_See code: [src/commands/workbook/write.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/write.ts)_
+_See code: [src/commands/workbook/write.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/workbook/write.ts)_

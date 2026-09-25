@@ -61,7 +61,7 @@ EXAMPLES
   $ gsheet worksheet:add --workbook=template.xlsx --worksheetTitle=Notes --inPlace
 ```
 
-_See code: [src/commands/worksheet/add.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/worksheet/add.ts)_
+_See code: [src/commands/worksheet/add.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/worksheet/add.ts)_
 
 ## `google-sheet worksheet:copy`
 
@@ -106,7 +106,7 @@ EXAMPLES
   Worksheet "<worksheetTitle>" copied to spreadsheet <destId> as sheet <sheetId>
 ```
 
-_See code: [src/commands/worksheet/copy.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/worksheet/copy.ts)_
+_See code: [src/commands/worksheet/copy.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/worksheet/copy.ts)_
 
 ## `google-sheet worksheet:get`
 
@@ -148,7 +148,7 @@ EXAMPLES
   Fetched "<worksheetTitle>" (<id>)
 ```
 
-_See code: [src/commands/worksheet/get.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/worksheet/get.ts)_
+_See code: [src/commands/worksheet/get.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/worksheet/get.ts)_
 
 ## `google-sheet worksheet:remove`
 
@@ -202,7 +202,7 @@ EXAMPLES
   $ gsheet worksheet:remove --workbook=template.xlsx --worksheetTitle=Draft --inPlace
 ```
 
-_See code: [src/commands/worksheet/remove.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/worksheet/remove.ts)_
+_See code: [src/commands/worksheet/remove.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/worksheet/remove.ts)_
 
 ## `google-sheet worksheet:rename`
 
@@ -256,4 +256,4 @@ EXAMPLES
   $ gsheet worksheet:rename --workbook=template.xlsx --worksheetTitle=Draft --newWorksheetTitle=Final --inPlace
 ```
 
-_See code: [src/commands/worksheet/rename.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/worksheet/rename.ts)_
+_See code: [src/commands/worksheet/rename.ts](https://github.com/jroehl/google-sheet-cli/blob/v3.1.0/src/commands/worksheet/rename.ts)_

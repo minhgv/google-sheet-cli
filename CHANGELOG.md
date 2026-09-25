@@ -9,18 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [3.1.0] — 2026-09-25
+
 ### Added
 
-Bảy command mới cùng một cơ chế lỗi có cấu trúc dùng chung, đưa CLI từ 30 lên 37 commands:
+Mười một command mới cùng một cơ chế lỗi có cấu trúc dùng chung, đưa CLI từ 30 lên 42 commands:
 
 - **Structured JSON errors cho mọi command:** `--json`/`-j` báo lỗi dưới dạng một envelope JSON duy nhất trên stderr, exit code 1 (`code` ổn định, `message` an toàn, `retryable`, `retryAfterMs?`, `issues?` liên kết tọa độ) — output thành công giữ nguyên; `--rawOutput`/`-r` in cả success lẫn failure dưới dạng JSON. Bộ mã lỗi: `USAGE` (sai argv), `AUTH_REQUIRED`/`UNAUTHORIZED`/`FORBIDDEN` (xác thực), `NOT_FOUND`/`CONFLICT`/`REQUEST_INVALID`/`RATE_LIMITED`/`UPSTREAM`/`NETWORK` (transport/API), `VALIDATION`/`SCHEMA_INVALID`/`DATA_INVALID` (hợp đồng dữ liệu), `INTERNAL`. Envelope không bao giờ chứa credentials, request/response internals hay error object tùy ý.
+- **`capabilities`:** self-description cho agent — liệt kê toàn bộ commands, input/output forms, destructive guards và error codes mà không cần đọc docs.
 - **`data:schema`:** khám phá schema cột của worksheet (read-only) trên một mẫu giới hạn (mặc định dòng 1–100, cột A–Z; đổi bằng `--minRow/--minCol/--maxRow/--maxCol`, dòng mẫu đầu là header row). Báo header thực tế kèm tọa độ A1 tuyệt đối, kiểu dữ liệu suy luận kèm số mẫu, số ô chứa formula, data-validation rules và named ranges; empty/duplicate header và mixed type được báo minh bạch. Kiểu suy luận chỉ mô tả mẫu — Google lưu date dưới dạng number, không phải schema chính thức.
 - **`data:validate`:** kiểm tra dữ liệu worksheet chống lại một TableSchema (`--schema` JSON inline hoặc `--schemaFile`/stdin), tái sử dụng đúng semantics của report (`required`, `type`, `enum`, `unique`, `min`/`max`). Mỗi violation báo kèm dòng và tọa độ A1 chính xác; dữ liệu sai exit 1 với mã `DATA_INVALID`, schema malformed fail với `SCHEMA_INVALID` trước khi bất kỳ request nào rời tiến trình. Không bao giờ ghi.
-- **`data:clear`:** xóa giá trị (values-only) trong một range A1 có giới hạn hai chiều, giữ nguyên number format và mọi thuộc tính ô khác (một lệnh values clear native sau formula guard). Ô formula từ chối bị xóa trừ khi có `--overwriteFormulas`; `--dryRun` xem trước số ô sẽ bị xóa với zero mutation.
+- **`data:clear`:** xóa giá trị (values-only) trong một range A1 có giới hạn hai chiều, giữ nguyên number format và mọi thuộc tính ô khác. Ô formula từ chối bị xóa trừ khi có `--overwriteFormulas`; `--dryRun` xem trước số ô sẽ bị xóa với zero mutation. Hỗ trợ cả file `.xlsx` local qua `--workbook`.
 - **`data:upsert`:** upsert theo một cột key. Key tồn tại → chỉ cập nhật đúng các ô input cung cấp (cột bị bỏ qua và formula hiện có được giữ nguyên); key mới → append dưới bảng. Input header-first dạng JSON/CSV/stdin, đúng một cột `--key` bắt buộc, so khớp key theo kiểu dữ liệu (string `"001"` không bao giờ khớp number `1`, leading zero được giữ), ghi `RAW` mặc định, từ chối key rỗng/trùng, và từ chối trước khi ghi nếu range giới hạn che giấu dữ liệu bảng phía sau. `--dryRun` báo added/updated/unchanged và planned ranges. Chỉ single-writer: chạy lại cùng input không sinh bản ghi trùng, nhưng không có transaction, không blind-retry sau failure mơ hồ, không hỗ trợ nhiều writer đồng thời.
+- **`data:export-csv`:** export một range worksheet ra CSV trên stdout hoặc file, UTF-8, escaping chuẩn RFC 4180.
+- **`spreadsheet:list`:** liệt kê các spreadsheet truy cập được qua Drive API (`drive.file` scope), phân trang `--limit`/`--pageToken`.
 - **`spreadsheet:copy`:** nhân bản spreadsheet qua Drive API. Source không đổi, receipt trả id và title do server gán; CLI không tự cấp lại sharing grants của nguồn. Kiểm tra quyền hiệu lực của bản sao trước khi chia sẻ dữ liệu nhạy cảm.
 - **`worksheet:copy`:** copy một worksheet sang spreadsheet đích tường minh qua Sheets API. Values và formulas được mang theo, source không đổi; khi đích đã có sheet trùng tên, server tự gán title duy nhất và receipt báo title cuối cùng cùng sheet id mới.
 - **`spreadsheet:export`:** export spreadsheet ra file PDF hoặc XLSX local qua Drive API. Ghi binary an toàn, atomic (file tạm + rename; file output sẵn có sống sót qua failure), chỉ thay thế khi có `--overwrite` tường minh, receipt kèm mime type, số byte và đường dẫn. Chịu giới hạn export 10 MB của Drive, và quyền truy cập nằm trong scope `drive.file` (chỉ các file app này tạo hoặc đã mở) — không phải toàn bộ Drive.
+- **`workbook:names`:** quản lý defined names của file `.xlsx` local — `list`, `add` (`--name`, `--range`), `remove` (`--name`).
+
+#### Local XLSX engine mở rộng (`--workbook`)
+
+- **Structural mutations:** `grid:insert`/`grid:delete` chèn/xóa dòng-cột trên `.xlsx` với merge-range management (unmerge → splice → re-merge; merge cắt ranh giới splice → từ chối `CONFLICT` trừ khi `--force`); `format:merge --workbook`; `workbook:find` tìm ô theo điều kiện; `workbook:write --cells` ghi từng ô rời rạc.
+- **`--updateRefs` trên `grid:insert`/`grid:delete`:** rewrite tham chiếu A1 cùng sheet và defined names sau splice — ref nằm trọn trong vùng xóa hoặc bị đẩy quá mép sheet → `#REF!`, receipt báo `refsRewritten`/`refsBroken`. Không có cờ này, refs giữ nguyên và receipt cảnh báo `formulasAtRisk`. Cross-sheet refs chưa hỗ trợ (phase 2).
+- **Formatting:** `format:cells --workbook` hỗ trợ font (bold/italic/underline/strikethrough/size/family/color), fill, alignment, `--wrapText`, `--numberFormat`, borders; các cờ không có tương đương ExcelJS (`--numberFormatType`, `--wrapStrategy` khác WRAP) từ chối bằng `USAGE` thay vì silent no-op.
+- **Grid:** `grid:freeze --workbook` (merge vào view hiện có, giữ axis không chỉ định và các thuộc tính view khác), `grid:resize --workbook` (`--pixels` hoặc `--auto`), `grid:hide --workbook` (`--unhide`).
+- **Sheet management:** `worksheet:add|remove|rename --workbook` — từ chối trùng title, xóa sheet visible cuối cùng, rename va chạm; `remove` dọn defined names thuộc sheet bị xóa.
+- **Safety:** mọi mutation `--workbook` hỗ trợ `--dryRun` và `-o/--inPlace`; save atomic qua file tạm + backup `.bak` + SHA-256; file chứa macro/chart/pivot/external link… bị từ chối ghi trừ khi `--discardUnsupported`.
+
+#### Agent-gateway hardening
+
+- **`--redacted` / `GSHEET_REDACTED`:** che credentials, token và đường dẫn nhạy cảm trong mọi output.
+- **`GSHEET_CONFIG_DIR`:** đổi thư mục cấu hình/token mặc định.
+- **Atomic token writes:** token OAuth ghi atomic với quyền 0600.
+- **`error.mutation` envelope:** receipt mutation thất bại trả structured error thay vì partial output.
 
 ### Fixed
 
