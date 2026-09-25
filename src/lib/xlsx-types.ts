@@ -324,6 +324,8 @@ export interface XlsxSpliceOptions {
   inheritFromBefore?: boolean;
   /** allow merges intersecting the splice boundary to be adjusted instead of rejected */
   force?: boolean;
+  /** rewrite same-sheet formula references and count defined-name shifts against the splice (cross-sheet refs untouched - phase 1 of F7) */
+  updateRefs?: boolean;
   dryRun?: boolean;
 }
 
@@ -339,6 +341,10 @@ export interface XlsxSpliceResult {
   mergeConflicts: string[];
   /** formula cells whose references may now be stale (never rewritten - see warnings) */
   formulasAtRisk: number;
+  /** with updateRefs: formula cells plus defined-name ranges whose references were rewritten */
+  refsRewritten: number;
+  /** with updateRefs: references that collapsed to #REF! or were removed with the deleted span */
+  refsBroken: number;
   /** values removed by a delete (empty for insert) */
   removedValues?: ReportCell[][];
   dryRun: boolean;
@@ -401,4 +407,172 @@ export interface XlsxCreateOptions {
   creator?: string;
   created?: Date;
   modified?: Date;
+}
+
+// ---------------------------------------------------------------------------
+// XLSX Presentation Types (format:cells, freeze/resize/hide)
+// ---------------------------------------------------------------------------
+
+export interface XlsxFormatCellsOptions {
+  worksheetTitle?: string;
+  /** bounded A1 range to format */
+  range: string;
+  clear?: boolean;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  fontSize?: number;
+  fontFamily?: string;
+  /** text color as #RRGGBB (or #AARRGGBB) */
+  textColor?: string;
+  /** cell background color as #RRGGBB (or #AARRGGBB) */
+  backgroundColor?: string;
+  horizontalAlignment?: 'LEFT' | 'CENTER' | 'RIGHT';
+  verticalAlignment?: 'TOP' | 'MIDDLE' | 'BOTTOM';
+  wrapText?: boolean;
+  numberFormat?: string;
+  /** border sides: comma list of top,bottom,left,right,innerHorizontal,innerVertical or "all"/"inner" */
+  borders?: string;
+  borderStyle?: 'DOTTED' | 'DASHED' | 'SOLID' | 'SOLID_MEDIUM' | 'SOLID_THICK' | 'DOUBLE' | 'NONE';
+  /** border color as #RRGGBB (or #AARRGGBB) */
+  borderColor?: string;
+  dryRun?: boolean;
+}
+
+export interface XlsxFormatCellsResult {
+  sheet: string;
+  range: string;
+  cellsFormatted: number;
+  /** style keys that were applied (or would be, on dryRun), e.g. ["bold", "backgroundColor", "borders(top,left)"] */
+  applied: string[];
+  clear: boolean;
+  dryRun: boolean;
+}
+
+export interface XlsxFreezeOptions {
+  worksheetTitle?: string;
+  /** number of rows to freeze (0 unfreezes the axis) */
+  rows?: number;
+  /** number of columns to freeze (0 unfreezes the axis) */
+  columns?: number;
+  dryRun?: boolean;
+}
+
+export interface XlsxFreezeResult {
+  sheet: string;
+  rows: number;
+  columns: number;
+  frozen: boolean;
+  /** the planned/actual ExcelJS model change, e.g. "views[0] = {state:'frozen', xSplit:1, ySplit:2}" */
+  model: string;
+  dryRun: boolean;
+}
+
+export interface XlsxResizeOptions {
+  worksheetTitle?: string;
+  dimension: XlsxDimension;
+  /** 1-based first row/column index to affect */
+  start: number;
+  count?: number;
+  /** explicit size in pixels; converted to Excel width characters / height points */
+  pixels?: number;
+  /** auto-size: columns fit their longest text (capped), rows reset to the default height */
+  auto?: boolean;
+  dryRun?: boolean;
+}
+
+export interface XlsxResizeTarget {
+  index: number;
+  before?: number;
+  after: number;
+}
+
+export interface XlsxResizeResult {
+  sheet: string;
+  dimension: XlsxDimension;
+  start: number;
+  count: number;
+  /** unit of the after/before numbers: Excel width characters or row height points */
+  unit: 'width-chars' | 'height-points';
+  resized: XlsxResizeTarget[];
+  dryRun: boolean;
+}
+
+export interface XlsxHideOptions {
+  worksheetTitle?: string;
+  dimension: XlsxDimension;
+  /** 1-based first row/column index to affect */
+  start: number;
+  count?: number;
+  /** unhide instead of hide */
+  unhide?: boolean;
+  dryRun?: boolean;
+}
+
+export interface XlsxHideResult {
+  sheet: string;
+  dimension: XlsxDimension;
+  start: number;
+  count: number;
+  hidden: boolean;
+  /** the planned/actual model change, e.g. "column 2-3: hidden = true" */
+  model: string;
+  dryRun: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// XLSX Sheet Management Types (worksheet add/remove/rename)
+// ---------------------------------------------------------------------------
+
+export interface XlsxSheetOpOptions {
+  dryRun?: boolean;
+}
+
+export interface XlsxAddSheetResult {
+  operation: 'add';
+  sheet: string;
+  dryRun: boolean;
+}
+
+export interface XlsxRemoveSheetResult {
+  operation: 'remove';
+  sheet: string;
+  dryRun: boolean;
+}
+
+export interface XlsxRenameSheetResult {
+  operation: 'rename';
+  from: string;
+  to: string;
+  dryRun: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// XLSX Defined-Name Types (workbook:names)
+// ---------------------------------------------------------------------------
+
+export interface XlsxAddNameOptions {
+  name: string;
+  /** sheet-qualified A1 range, e.g. "Sheet1!$A$1:$A$9" */
+  refersTo: string;
+  dryRun?: boolean;
+}
+
+export interface XlsxAddNameResult {
+  name: string;
+  refersTo: string;
+  dryRun: boolean;
+}
+
+export interface XlsxRemoveNameOptions {
+  name: string;
+  dryRun?: boolean;
+}
+
+export interface XlsxRemoveNameResult {
+  name: string;
+  /** ranges the name referred to before the removal */
+  removedRanges: string[];
+  dryRun: boolean;
 }

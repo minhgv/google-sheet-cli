@@ -5,6 +5,7 @@ Manage local Excel (XLSX) workbooks
 
 * [`google-sheet workbook:find`](#google-sheet-workbookfind)
 * [`google-sheet workbook:inspect`](#google-sheet-workbookinspect)
+* [`google-sheet workbook:names [ACTION]`](#google-sheet-workbooknames-action)
 * [`google-sheet workbook:read`](#google-sheet-workbookread)
 * [`google-sheet workbook:write [DATA]`](#google-sheet-workbookwrite-data)
 
@@ -83,6 +84,46 @@ EXAMPLES
 ```
 
 _See code: [src/commands/workbook/inspect.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/inspect.ts)_
+
+## `google-sheet workbook:names [ACTION]`
+
+List, add or remove defined names (named ranges) in a local XLSX workbook. Run without an action to list every defined name, including the managed ranges the CLI records. add requires --name and --refersTo (a sheet-qualified A1 range); remove requires --name.
+
+```
+USAGE
+  $ google-sheet workbook:names [ACTION] -f <value> [-h] [-o <value>] [--inPlace] [--discardUnsupported] [--name
+    <value>] [--refersTo <value>] [--dryRun] [-r]
+
+ARGUMENTS
+  [ACTION]  (list|add|remove) [default: list] list (default), add or remove
+
+FLAGS
+  -f, --file=<value>        (required) Path to the local XLSX workbook
+  -h, --help                Show CLI help.
+  -o, --output=<value>      Destination path for the modified XLSX file (without it and without --inPlace the mutation
+                            is refused unless --dryRun)
+  -r, --rawOutput           Get the raw output as a JSON string
+      --discardUnsupported  Allow saving a workbook whose unsupported features (charts, pivot tables, macros) would be
+                            dropped by the local engine
+      --dryRun              Preview the mutation without applying it
+      --inPlace             Modify the --file workbook in place (a .bak backup is written first)
+      --name=<value>        Defined name to add or remove (add/remove only)
+      --refersTo=<value>    Sheet-qualified A1 range the name refers to, e.g. "Data!$B$2:$B$4" (add only)
+
+DESCRIPTION
+  List, add or remove defined names (named ranges) in a local XLSX workbook. Run without an action to list every defined
+  name, including the managed ranges the CLI records. add requires --name and --refersTo (a sheet-qualified A1 range);
+  remove requires --name.
+
+EXAMPLES
+  $ gsheet workbook:names --file=book.xlsx
+
+  $ gsheet workbook:names --file=book.xlsx add --name Amounts --refersTo "Data!$B$2:$B$4" --inPlace
+
+  $ gsheet workbook:names --file=book.xlsx remove --name Amounts --inPlace
+```
+
+_See code: [src/commands/workbook/names.ts](https://github.com/jroehl/google-sheet-cli/blob/master/src/commands/workbook/names.ts)_
 
 ## `google-sheet workbook:read`
 

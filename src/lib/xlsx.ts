@@ -24,6 +24,15 @@ import {
   XlsxFindMatch,
   XlsxFindOptions,
   XlsxFindResult,
+  XlsxFreezeOptions,
+  XlsxFreezeResult,
+  XlsxFormatCellsOptions,
+  XlsxFormatCellsResult,
+  XlsxAddNameOptions,
+  XlsxAddNameResult,
+  XlsxAddSheetResult,
+  XlsxHideOptions,
+  XlsxHideResult,
   XlsxInspection,
   XlsxLoadOptions,
   XlsxInspectOptions,
@@ -34,9 +43,17 @@ import {
   XlsxReadMode,
   XlsxReadOptions,
   XlsxReadResult,
+  XlsxRemoveNameOptions,
+  XlsxRemoveNameResult,
+  XlsxRemoveSheetResult,
+  XlsxRenameSheetResult,
+  XlsxResizeOptions,
+  XlsxResizeResult,
+  XlsxResizeTarget,
   XlsxSaveOptions,
   XlsxSaveResult,
   XlsxSheetMetadata,
+  XlsxSheetOpOptions,
   XlsxSetCellsOptions,
   XlsxSetCellsResult,
   XlsxSpliceOptions,
@@ -50,7 +67,15 @@ import {
   parseCellAddress,
   colLetterToIndex,
   indexToColLetter,
+  MAX_EXCEL_COLS,
+  MAX_EXCEL_ROWS,
+  ParsedA1Range,
 } from './xlsx-range';
+import {
+  diffDefinedNameRanges,
+  rewriteFormulaRefs,
+  XlsxRefSpliceOp,
+} from './xlsx-refs';
 import { inspectZipBuffer } from './xlsx-zip';
 import { computeFileSha256, saveBufferAtomic } from './xlsx-file';
 
@@ -60,6 +85,61 @@ export * from './xlsx-zip';
 export * from './xlsx-file';
 
 const MANAGED_RANGE_PREFIX = '_GS_MANAGED_';
+
+const XLSX_DEFAULT_ROW_HEIGHT = 15;
+const XLSX_DEFAULT_COL_WIDTH = 9;
+const XLSX_AUTO_WIDTH_PADDING = 2;
+const XLSX_MAX_AUTO_WIDTH = 60;
+const XLSX_MAX_COL_WIDTH = 255;
+const XLSX_MAX_ROW_HEIGHT = 409.5;
+
+/** style keys formatCells accepts; --clear refuses combinations with any of them */
+const XLSX_FORMAT_KEYS = [
+  'bold',
+  'italic',
+  'underline',
+  'strikethrough',
+  'fontSize',
+  'fontFamily',
+  'textColor',
+  'backgroundColor',
+  'horizontalAlignment',
+  'verticalAlignment',
+  'wrapText',
+  'numberFormat',
+  'borders',
+] as const;
+
+/** Sheets-side border style names mapped onto ExcelJS line styles; NONE removes a side */
+const XLSX_BORDER_STYLE_MAP: Record<string, ExcelJS.BorderStyle | undefined> = {
+  DOTTED: 'dotted',
+  DASHED: 'dashed',
+  SOLID: 'thin',
+  SOLID_MEDIUM: 'medium',
+  SOLID_THICK: 'thick',
+  DOUBLE: 'double',
+  NONE: undefined,
+};
+
+/** refersTo must be a sheet-quoted or bare-title qualified A1 range; ExcelJS's own add() accepts anything */
+const XLSX_REFERS_TO_RE = /^(?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?$/;
+
+type XlsxBorderSide = 'top' | 'bottom' | 'left' | 'right' | 'innerHorizontal' | 'innerVertical';
+
+/** Style spec resolved once from flags, then applied to every cell of the range. */
+interface PreparedCellStyle {
+  clear: boolean;
+  /** style keys that were applied, used for receipts and dry-run previews */
+  applied: string[];
+  font?: Partial<ExcelJS.Font>;
+  fill?: ExcelJS.Fill;
+  alignment?: Partial<ExcelJS.Alignment>;
+  numFmt?: string;
+  borderSides?: Set<XlsxBorderSide>;
+  /** undefined means the addressed sides are removed (borderStyle NONE) */
+  borderStyle?: ExcelJS.BorderStyle;
+  borderColor?: { argb: string };
+}
 
 interface CellExtraction {
   scalarValue: ReportScalar;
@@ -224,15 +304,7 @@ export class XlsxWorkbook {
       };
     });
 
-    const definedNames: XlsxDefinedName[] = [];
-    const model = (this.workbook.definedNames as unknown as { model?: Record<string, { name: string; ranges: string[] }> })?.model;
-    if (model && typeof model === 'object') {
-      for (const [key, val] of Object.entries(model)) {
-        if (val && typeof val === 'object' && Array.isArray(val.ranges)) {
-          definedNames.push({ name: val.name || key, ranges: val.ranges });
-        }
-      }
-    }
+    const definedNames: XlsxDefinedName[] = this._readDefinedNames();
 
     const hasUnsupported = this.preflight?.hasUnsupportedFeatures ?? false;
     const unsupportedFeatures = this.preflight?.unsupportedFeatures ?? [];
@@ -509,8 +581,12 @@ export class XlsxWorkbook {
    * boundary refuses the operation unless force is passed - with force, an insert
    * extends the merge over the new rows/columns and a delete shrinks it.
    *
-   * Formula references are never rewritten: the receipt reports how many formula
-   * cells reference the shifted region so the caller can verify them.
+   * Formula references are left stale by default: the receipt reports how many
+   * formula cells reference the shifted region so the caller can verify them.
+   * With updateRefs, same-sheet references in every formula of the worksheet
+   * are rewritten against the splice (refs inside a deleted span become #REF!)
+   * and defined-name shifts are counted - cross-sheet references are
+   * deliberately untouched (phase 1 of F7).
    */
   public splice(operation: 'insert' | 'delete', options: XlsxSpliceOptions): XlsxSpliceResult {
     const ws = this._resolveWorksheet(options.worksheetTitle);
@@ -518,6 +594,11 @@ export class XlsxWorkbook {
     const start = options.start;
     const count = options.count ?? 1;
     const warnings: string[] = [];
+    const willRewriteRefs = options.updateRefs === true && options.dryRun !== true;
+    // ExcelJS's own spliceRows/spliceColumns shift defined names on the spliced
+    // sheet as a side effect; snapshot the ranges beforehand so the receipt can
+    // report the change without shifting them twice.
+    const definedNamesBefore = options.updateRefs === true ? this._definedNameSignature() : undefined;
 
     if (!Number.isInteger(start) || start < 1) {
       throw new Error(`--start must be a positive 1-based index, got ${start}.`);
@@ -600,10 +681,10 @@ export class XlsxWorkbook {
       );
     }
 
-    // Formula cells referencing the shifted region are never rewritten; count them
-    // so the receipt can warn honestly.
+    // Formula cells referencing the shifted region are never rewritten unless
+    // updateRefs was requested; count them so the receipt can warn honestly.
     const formulasAtRisk = this._countFormulasReferencing(ws, start, isRows);
-    if (formulasAtRisk > 0) {
+    if (formulasAtRisk > 0 && !willRewriteRefs) {
       warnings.push(
         `${formulasAtRisk} formula cell(s) on "${ws.name}" may reference the shifted region; formula references are not rewritten - verify them after the splice.`
       );
@@ -645,11 +726,20 @@ export class XlsxWorkbook {
         mergesAdjusted,
         mergeConflicts,
         formulasAtRisk,
+        refsRewritten: 0,
+        refsBroken: 0,
         removedValues,
         dryRun: true,
         warnings,
       };
     }
+
+    // Snapshot every formula cell's effective text BEFORE the physical splice.
+    // Shared-formula slave cells translate the master's text live through their
+    // offset, so reading them after the master has been rewritten would
+    // double-shift them - and ExcelJS's splice copies values into fresh cell
+    // objects anyway, so the snapshot is keyed by pre-splice address.
+    const formulaSnapshot = willRewriteRefs ? this._snapshotFormulaTexts(ws) : undefined;
 
     // Unmerge everything affected BEFORE splicing so ExcelJS's own remerge logic
     // (which mishandles boundary-straddling merges) has nothing left to touch.
@@ -686,6 +776,24 @@ export class XlsxWorkbook {
       ws.mergeCells(p.startRow, p.startCol, p.endRow, p.endCol);
     }
 
+    // The snapshot holds pre-splice coordinates (the physical splice moves
+    // values but never touches formula strings), so rewriting against the
+    // original operation parameters and re-resolving each entry's spliced
+    // address is correct here.
+    let refsRewritten = 0;
+    let refsBroken = 0;
+    if (willRewriteRefs) {
+      const op: XlsxRefSpliceOp = { dimension, start, count, mode: operation };
+      const cellRefs = this._rewriteFormulaRefs(ws, formulaSnapshot!, op, isRows);
+      refsRewritten = cellRefs.rewritten;
+      refsBroken = cellRefs.refErrors;
+      if (definedNamesBefore) {
+        const nameDiff = diffDefinedNameRanges(definedNamesBefore, this._definedNameSignature());
+        refsRewritten += nameDiff.rewritten;
+        refsBroken += nameDiff.broken;
+      }
+    }
+
     return {
       operation,
       sheet: ws.name,
@@ -695,6 +803,8 @@ export class XlsxWorkbook {
       mergesAdjusted,
       mergeConflicts,
       formulasAtRisk,
+      refsRewritten,
+      refsBroken,
       removedValues,
       dryRun: false,
       warnings,
@@ -881,6 +991,627 @@ export class XlsxWorkbook {
   }
 
   /**
+   * Applies a formatting subset to every cell of a bounded A1 range without
+   * touching values or formulas. Only the style groups ExcelJS models natively
+   * are supported (font, fill, alignment, wrap, number format, borders); cloud
+   * flags without an ExcelJS equivalent are refused at the command layer.
+   * clear resets the whole style of every cell and cannot be combined with
+   * style keys.
+   */
+  public formatCells(options: XlsxFormatCellsOptions): XlsxFormatCellsResult {
+    const ws = this._resolveWorksheet(options.worksheetTitle);
+    const parsed = parseA1Range(options.range, { defaultSheet: ws.name });
+    if (parsed.isFullCol || parsed.isFullRow) {
+      throw new Error(`Format range "${options.range}" must be bounded on both axes (e.g. "Sheet1!A1:J50").`);
+    }
+
+    const prepared = this._prepareCellStyle(options);
+
+    if (!options.dryRun) {
+      for (let r = parsed.startRow; r <= parsed.endRow; r++) {
+        for (let c = parsed.startCol; c <= parsed.endCol; c++) {
+          this._applyCellStyle(ws.getCell(r, c), prepared, r, c, parsed);
+        }
+      }
+    }
+
+    return {
+      sheet: ws.name,
+      range: parsed.raw,
+      cellsFormatted: (parsed.endRow - parsed.startRow + 1) * (parsed.endCol - parsed.startCol + 1),
+      applied: prepared.applied,
+      clear: Boolean(options.clear),
+      dryRun: Boolean(options.dryRun),
+    };
+  }
+
+  /**
+   * Freezes or unfreezes rows and columns on a worksheet by rewriting the
+   * first sheet view (ExcelJS models the frozen pane as views[0]). At least
+   * one of rows/columns must be given; an unspecified axis keeps whatever the
+   * prior view froze on it, 0 on an axis unfreezes it, and 0 on both unfreezes
+   * the pane entirely. The new view is merged over the old one so unrelated
+   * view attributes (zoomScale, showGridLines, ...) survive.
+   */
+  public freezePanes(options: XlsxFreezeOptions): XlsxFreezeResult {
+    const ws = this._resolveWorksheet(options.worksheetTitle);
+    const rows = options.rows;
+    const columns = options.columns;
+    if (rows === undefined && columns === undefined) {
+      throw new Error('freezePanes requires rows or columns to be given (0 unfreezes that axis).');
+    }
+    for (const [label, value] of [['rows', rows], ['columns', columns]] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+        throw new Error(`Freeze ${label} must be a non-negative integer, got ${value}.`);
+      }
+    }
+
+    // views is Partial<WorksheetView>[] and its split fields only exist on the
+    // frozen/split variants; reading them off the prior view needs the
+    // structural cast (serialized views render xSplit/ySplit as numbers).
+    const priorView = (ws.views ?? [])[0] as { xSplit?: number; ySplit?: number } | undefined;
+    const frozenRows = rows ?? priorView?.ySplit ?? 0;
+    const frozenCols = columns ?? priorView?.xSplit ?? 0;
+    const frozen = frozenRows > 0 || frozenCols > 0;
+    const model = frozen
+      ? `views[0] = {state:'frozen', xSplit:${frozenCols}, ySplit:${frozenRows}}`
+      : `views[0] = {state:'normal'}`;
+
+    if (!options.dryRun) {
+      if (frozen) {
+        ws.views = [
+          {
+            ...priorView,
+            state: 'frozen',
+            xSplit: frozenCols,
+            ySplit: frozenRows,
+            topLeftCell: `${indexToColLetter(frozenCols + 1)}${frozenRows + 1}`,
+          },
+        ];
+      } else {
+        // Unfreezing must clear the pane's leftover splits and topLeftCell, or
+        // the normal view would serialize stale frozen-pane attributes. The
+        // split fields only exist on the frozen/split view variants, so the
+        // zeroed literal needs the structural cast.
+        const normal = {
+          ...priorView,
+          state: 'normal',
+          xSplit: 0,
+          ySplit: 0,
+          topLeftCell: undefined,
+        } as Partial<ExcelJS.WorksheetView>;
+        ws.views = [normal];
+      }
+    }
+
+    return { sheet: ws.name, rows: frozenRows, columns: frozenCols, frozen, model, dryRun: Boolean(options.dryRun) };
+  }
+
+  /**
+   * Resizes rows or columns. --pixels is converted from screen pixels into
+   * Excel units (columns: width characters via the 7px/char + 5px padding
+   * approximation of the default font; rows: points at 0.75pt/px). --auto
+   * sizes columns to their longest cell text (capped) and resets rows to the
+   * default height; ExcelJS has no measured auto-fit.
+   */
+  public resizeGrid(options: XlsxResizeOptions): XlsxResizeResult {
+    const ws = this._resolveWorksheet(options.worksheetTitle);
+    const dimension = options.dimension;
+    if (dimension !== 'ROWS' && dimension !== 'COLUMNS') {
+      throw new Error(`resizeGrid requires dimension ROWS or COLUMNS, got "${dimension}".`);
+    }
+    const start = options.start;
+    const count = options.count ?? 1;
+    if (!Number.isInteger(start) || start < 1) {
+      throw new Error(`--start must be a positive 1-based index, got ${start}.`);
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`--count must be a positive integer, got ${count}.`);
+    }
+    if (options.auto && options.pixels !== undefined) {
+      throw new Error('resizeGrid accepts either pixels or auto, not both.');
+    }
+    if (!options.auto && options.pixels === undefined) {
+      throw new Error('resizeGrid requires either a pixel size or auto sizing.');
+    }
+    if (options.pixels !== undefined && (!Number.isInteger(options.pixels) || options.pixels < 1)) {
+      throw new Error(`--pixels must be a positive integer, got ${options.pixels}.`);
+    }
+
+    const isCols = dimension === 'COLUMNS';
+    const spanEnd = start + count - 1;
+    const limit = isCols ? MAX_EXCEL_COLS : MAX_EXCEL_ROWS;
+    if (spanEnd > limit) {
+      throw new Error(`Resize span ${start}..${spanEnd} exceeds the Excel limit of ${limit} ${isCols ? 'columns' : 'rows'}.`);
+    }
+
+    const resized: XlsxResizeTarget[] = [];
+    for (let index = start; index <= spanEnd; index++) {
+      if (isCols) {
+        const col = ws.getColumn(index);
+        const before = col.width;
+        const after = options.auto ? this._autoColumnWidth(ws, index) : this._pixelsToWidth(options.pixels as number);
+        if (!options.dryRun) col.width = after;
+        resized.push({ index, before, after });
+      } else {
+        const row = ws.getRow(index);
+        const before = row.height;
+        const after = options.auto ? XLSX_DEFAULT_ROW_HEIGHT : this._pixelsToHeight(options.pixels as number);
+        if (!options.dryRun) row.height = after;
+        resized.push({ index, before, after });
+      }
+    }
+
+    return {
+      sheet: ws.name,
+      dimension,
+      start,
+      count,
+      unit: isCols ? 'width-chars' : 'height-points',
+      resized,
+      dryRun: Boolean(options.dryRun),
+    };
+  }
+
+  /**
+   * Hides or unhides rows or columns (col.hidden / row.hidden). Purely a
+   * visibility flag: values, styles and formulas are untouched.
+   */
+  public setGridHidden(options: XlsxHideOptions): XlsxHideResult {
+    const ws = this._resolveWorksheet(options.worksheetTitle);
+    const dimension = options.dimension;
+    if (dimension !== 'ROWS' && dimension !== 'COLUMNS') {
+      throw new Error(`setGridHidden requires dimension ROWS or COLUMNS, got "${dimension}".`);
+    }
+    const start = options.start;
+    const count = options.count ?? 1;
+    if (!Number.isInteger(start) || start < 1) {
+      throw new Error(`--start must be a positive 1-based index, got ${start}.`);
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`--count must be a positive integer, got ${count}.`);
+    }
+
+    const isCols = dimension === 'COLUMNS';
+    const spanEnd = start + count - 1;
+    const limit = isCols ? MAX_EXCEL_COLS : MAX_EXCEL_ROWS;
+    if (spanEnd > limit) {
+      throw new Error(`Hide span ${start}..${spanEnd} exceeds the Excel limit of ${limit} ${isCols ? 'columns' : 'rows'}.`);
+    }
+
+    const hidden = options.unhide !== true;
+    if (!options.dryRun) {
+      for (let index = start; index <= spanEnd; index++) {
+        if (isCols) ws.getColumn(index).hidden = hidden;
+        else ws.getRow(index).hidden = hidden;
+      }
+    }
+
+    const noun = isCols ? 'column' : 'row';
+    const span = count > 1 ? `${start}-${spanEnd}` : `${start}`;
+    return {
+      sheet: ws.name,
+      dimension,
+      start,
+      count,
+      hidden,
+      model: `${noun} ${span}: hidden = ${hidden}`,
+      dryRun: Boolean(options.dryRun),
+    };
+  }
+
+  /**
+   * Adds an empty worksheet. Duplicate titles are refused (ExcelJS would throw
+   * a bare internal error; this one names the existing sheet up front).
+   */
+  public addSheet(title: string, options?: XlsxSheetOpOptions): XlsxAddSheetResult {
+    const trimmed = title?.trim();
+    if (!trimmed) {
+      throw new Error('worksheetTitle is required to add a sheet on the local backend.');
+    }
+    if (this.workbook.getWorksheet(trimmed)) {
+      throw new Error(`A worksheet named "${trimmed}" already exists. Pick another title or remove the existing sheet first.`);
+    }
+    if (!options?.dryRun) {
+      this.workbook.addWorksheet(trimmed);
+    }
+    return { operation: 'add', sheet: trimmed, dryRun: Boolean(options?.dryRun) };
+  }
+
+  /**
+   * Removes a worksheet by title. The workbook must keep at least one visible
+   * sheet afterwards - removing the last visible one is refused.
+   */
+  public removeSheet(title: string, options?: XlsxSheetOpOptions): XlsxRemoveSheetResult {
+    const trimmed = title?.trim();
+    if (!trimmed) {
+      throw new Error('worksheetTitle is required to remove a sheet on the local backend.');
+    }
+    const ws = this.workbook.getWorksheet(trimmed);
+    if (!ws) {
+      const available = this.workbook.worksheets.map((w) => `"${w.name}"`).join(', ');
+      throw new Error(`No worksheet named "${trimmed}" in this workbook. Available sheets: ${available || '(none)'}.`);
+    }
+    const remainingVisible = this.workbook.worksheets.filter(
+      (w) => w !== ws && w.state !== 'hidden' && w.state !== 'veryHidden'
+    );
+    if (remainingVisible.length === 0) {
+      throw new Error(`Cannot remove "${trimmed}": it is the last visible worksheet in the workbook.`);
+    }
+    if (!options?.dryRun) {
+      // ExcelJS's removeWorksheet never touches definedNames.matrixMap, so
+      // names scoped to the removed sheet would serialize dangling.
+      this._dropDefinedNamesForSheet(trimmed);
+      this.workbook.removeWorksheet(trimmed);
+    }
+    return { operation: 'remove', sheet: trimmed, dryRun: Boolean(options?.dryRun) };
+  }
+
+  /**
+   * Deletes defined names whose ranges all reference the given sheet (matched
+   * by "Title!" / "'Title'!" range prefixes). Names spanning several sheets are
+   * left untouched - partial rewrites are phase 2, the same scope line as
+   * renameSheet.
+   */
+  private _dropDefinedNamesForSheet(title: string): void {
+    const matrixMap = (this.workbook.definedNames as unknown as {
+      matrixMap?: Record<string, unknown>;
+    }).matrixMap;
+    if (!matrixMap) return;
+    const prefixes = [`${title}!`, `'${title}'!`];
+    for (const { name, ranges } of this._readDefinedNames()) {
+      if (ranges.length > 0 && ranges.every((range) => prefixes.some((prefix) => range.startsWith(prefix)))) {
+        delete matrixMap[name];
+      }
+    }
+  }
+
+  /**
+   * Renames a worksheet. The new title must not collide with an existing sheet.
+   * Defined names are not rewritten (phase 2 of --updateRefs; refs pointing at
+   * the old title go stale exactly like ExcelJS's own rename).
+   */
+  public renameSheet(from: string, to: string, options?: XlsxSheetOpOptions): XlsxRenameSheetResult {
+    const fromTrimmed = from?.trim();
+    const toTrimmed = to?.trim();
+    if (!fromTrimmed || !toTrimmed) {
+      throw new Error('renameSheet requires the current worksheetTitle and the new title.');
+    }
+    const ws = this.workbook.getWorksheet(fromTrimmed);
+    if (!ws) {
+      const available = this.workbook.worksheets.map((w) => `"${w.name}"`).join(', ');
+      throw new Error(`No worksheet named "${fromTrimmed}" in this workbook. Available sheets: ${available || '(none)'}.`);
+    }
+    if (toTrimmed !== fromTrimmed && this.workbook.getWorksheet(toTrimmed)) {
+      throw new Error(`A worksheet named "${toTrimmed}" already exists. Pick another title.`);
+    }
+    if (!options?.dryRun) {
+      ws.name = toTrimmed;
+    }
+    return { operation: 'rename', from: fromTrimmed, to: toTrimmed, dryRun: Boolean(options?.dryRun) };
+  }
+
+  /**
+   * Lists the workbook's defined names (named ranges). Read-only counterpart
+   * of inspect().definedNames.
+   */
+  public listDefinedNames(): XlsxDefinedName[] {
+    return this._readDefinedNames();
+  }
+
+  /**
+   * Adds a defined name. refersTo must be a sheet-qualified A1 range - ExcelJS's
+   * own DefinedNames.add silently accepts garbage location strings, so the
+   * format is validated here first. Adding over an existing name is refused;
+   * remove it first.
+   */
+  public addDefinedName(options: XlsxAddNameOptions): XlsxAddNameResult {
+    const name = options.name?.trim();
+    if (!name) {
+      throw new Error('A defined name is required (a non-empty --name).');
+    }
+    const refersTo = options.refersTo?.trim();
+    if (!refersTo || !XLSX_REFERS_TO_RE.test(refersTo)) {
+      throw new Error(
+        `refersTo "${options.refersTo}" is not a sheet-qualified A1 range. Use the form Sheet!$A$1:$A$9 (quoted titles allowed: 'My Sheet'!$A$1).`
+      );
+    }
+    if (this._readDefinedNames().some((n) => n.name === name)) {
+      throw new Error(`A defined name "${name}" already exists. Remove it first or pick another name.`);
+    }
+    if (!options.dryRun) {
+      // ExcelJS argument order is (location, name)
+      this.workbook.definedNames.add(refersTo, name);
+    }
+    return { name, refersTo, dryRun: Boolean(options.dryRun) };
+  }
+
+  /**
+   * Removes a defined name together with all of its ranges. ExcelJS's public
+   * DefinedNames.remove(locStr, name) only deletes a single decoded cell and
+   * leaves range-backed names intact, so the name's matrix is dropped from the
+   * internal matrixMap instead - the same store the serializer reads.
+   */
+  public removeDefinedName(options: XlsxRemoveNameOptions): XlsxRemoveNameResult {
+    const name = options.name?.trim();
+    if (!name) {
+      throw new Error('A defined name is required (a non-empty --name).');
+    }
+    const existing = this._readDefinedNames().find((n) => n.name === name);
+    if (!existing) {
+      const available = this._readDefinedNames().map((n) => `"${n.name}"`).join(', ');
+      throw new Error(`No defined name "${name}" in this workbook. Available names: ${available || '(none)'}.`);
+    }
+    if (!options.dryRun) {
+      const matrixMap = (this.workbook.definedNames as unknown as { matrixMap: Record<string, unknown> }).matrixMap;
+      delete matrixMap[name];
+    }
+    return { name, removedRanges: existing.ranges, dryRun: Boolean(options.dryRun) };
+  }
+
+  /**
+   * Resolves the style spec once per formatCells call so per-cell application
+   * stays a plain merge. Validates every flag here - including the ones the
+   * command layer already typed - so engine callers get the same refusals.
+   */
+  private _prepareCellStyle(options: XlsxFormatCellsOptions): PreparedCellStyle {
+    const clear = options.clear === true;
+    if (clear) {
+      const clash = XLSX_FORMAT_KEYS.filter((key) => options[key] !== undefined);
+      if (clash.length > 0) {
+        throw new Error(`clear cannot be combined with style flags: ${clash.join(', ')}.`);
+      }
+      return { clear: true, applied: ['clear'] };
+    }
+
+    const applied: string[] = [];
+    const prepared: PreparedCellStyle = { clear: false, applied };
+
+    const font: Partial<ExcelJS.Font> = {};
+    if (options.bold !== undefined) {
+      font.bold = options.bold;
+      applied.push('bold');
+    }
+    if (options.italic !== undefined) {
+      font.italic = options.italic;
+      applied.push('italic');
+    }
+    if (options.underline !== undefined) {
+      font.underline = options.underline;
+      applied.push('underline');
+    }
+    if (options.strikethrough !== undefined) {
+      font.strike = options.strikethrough;
+      applied.push('strikethrough');
+    }
+    if (options.fontSize !== undefined) {
+      if (!Number.isFinite(options.fontSize) || options.fontSize < 1 || options.fontSize > 409) {
+        throw new Error(`fontSize must be between 1 and 409 points, got ${options.fontSize}.`);
+      }
+      font.size = options.fontSize;
+      applied.push('fontSize');
+    }
+    if (options.fontFamily !== undefined) {
+      if (!options.fontFamily.trim()) {
+        throw new Error('fontFamily must be a non-empty font name.');
+      }
+      font.name = options.fontFamily;
+      applied.push('fontFamily');
+    }
+    if (options.textColor !== undefined) {
+      font.color = { argb: this._argbFromHex(options.textColor, 'textColor') };
+      applied.push('textColor');
+    }
+    if (Object.keys(font).length > 0) prepared.font = font;
+
+    if (options.backgroundColor !== undefined) {
+      prepared.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: this._argbFromHex(options.backgroundColor, 'backgroundColor') },
+      };
+      applied.push('backgroundColor');
+    }
+
+    const alignment: Partial<ExcelJS.Alignment> = {};
+    if (options.horizontalAlignment !== undefined) {
+      const horizontal = ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right' } as const)[options.horizontalAlignment];
+      if (!horizontal) {
+        throw new Error(`horizontalAlignment must be LEFT, CENTER or RIGHT, got "${options.horizontalAlignment}".`);
+      }
+      alignment.horizontal = horizontal;
+      applied.push('horizontalAlignment');
+    }
+    if (options.verticalAlignment !== undefined) {
+      const vertical = ({ TOP: 'top', MIDDLE: 'middle', BOTTOM: 'bottom' } as const)[options.verticalAlignment];
+      if (!vertical) {
+        throw new Error(`verticalAlignment must be TOP, MIDDLE or BOTTOM, got "${options.verticalAlignment}".`);
+      }
+      alignment.vertical = vertical;
+      applied.push('verticalAlignment');
+    }
+    if (options.wrapText !== undefined) {
+      alignment.wrapText = options.wrapText;
+      applied.push('wrapText');
+    }
+    if (Object.keys(alignment).length > 0) prepared.alignment = alignment;
+
+    if (options.numberFormat !== undefined) {
+      if (!options.numberFormat.trim()) {
+        throw new Error('numberFormat must be a non-empty pattern.');
+      }
+      prepared.numFmt = options.numberFormat;
+      applied.push('numberFormat');
+    }
+
+    if (options.borders !== undefined) {
+      prepared.borderSides = this._parseBorderSides(options.borders);
+      if (options.borderStyle !== undefined && !(options.borderStyle in XLSX_BORDER_STYLE_MAP)) {
+        throw new Error(
+          `borderStyle "${options.borderStyle}" is not supported. Supported styles: ${Object.keys(XLSX_BORDER_STYLE_MAP).join(', ')}.`
+        );
+      }
+      prepared.borderStyle = options.borderStyle === undefined ? 'thin' : XLSX_BORDER_STYLE_MAP[options.borderStyle];
+      prepared.borderColor = {
+        argb: this._argbFromHex(options.borderColor ?? '#000000', 'borderColor'),
+      };
+      applied.push(`borders(${[...prepared.borderSides].join(',')})`);
+    }
+
+    if (applied.length === 0) {
+      throw new Error('No formatting flags were given. Pass style flags (e.g. bold, backgroundColor) or clear.');
+    }
+    return prepared;
+  }
+
+  /** Applies one prepared style spec to a single cell, merging with its existing style. */
+  private _applyCellStyle(
+    cell: ExcelJS.Cell,
+    prepared: PreparedCellStyle,
+    row: number,
+    col: number,
+    parsed: ParsedA1Range
+  ): void {
+    if (prepared.clear) {
+      cell.style = {};
+      return;
+    }
+    if (prepared.font) cell.font = { ...cell.font, ...prepared.font };
+    if (prepared.fill) cell.fill = prepared.fill;
+    if (prepared.alignment) cell.alignment = { ...cell.alignment, ...prepared.alignment };
+    if (prepared.numFmt !== undefined) cell.numFmt = prepared.numFmt;
+    if (prepared.borderSides) {
+      const style = prepared.borderStyle;
+      const next: Partial<ExcelJS.Borders> = { ...cell.border };
+      for (const side of this._concreteBorderSides(prepared.borderSides, row, col, parsed)) {
+        if (style === undefined) next[side] = undefined;
+        else next[side] = { style, color: prepared.borderColor };
+      }
+      cell.border = next;
+    }
+  }
+
+  /**
+   * Expands the requested border sides for one cell position: "inner" sides
+   * exist only between two cells of the range, so a cell on the range edge
+   * gets no border there.
+   */
+  private _concreteBorderSides(
+    sides: Set<XlsxBorderSide>,
+    row: number,
+    col: number,
+    parsed: ParsedA1Range
+  ): ('top' | 'bottom' | 'left' | 'right')[] {
+    const out = new Set<'top' | 'bottom' | 'left' | 'right'>();
+    for (const side of sides) {
+      if (side === 'top' || side === 'bottom' || side === 'left' || side === 'right') {
+        out.add(side);
+      } else if (side === 'innerHorizontal') {
+        if (row > parsed.startRow) out.add('top');
+        if (row < parsed.endRow) out.add('bottom');
+      } else {
+        if (col > parsed.startCol) out.add('left');
+        if (col < parsed.endCol) out.add('right');
+      }
+    }
+    return [...out];
+  }
+
+  private _parseBorderSides(raw: string): Set<XlsxBorderSide> {
+    const valid: XlsxBorderSide[] = ['top', 'bottom', 'left', 'right', 'innerHorizontal', 'innerVertical'];
+    const sides = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (sides.length === 1 && sides[0] === 'all') {
+      return new Set<XlsxBorderSide>(['top', 'bottom', 'left', 'right']);
+    }
+    if (sides.length === 1 && sides[0] === 'inner') {
+      return new Set<XlsxBorderSide>(['innerHorizontal', 'innerVertical']);
+    }
+    const out = new Set<XlsxBorderSide>();
+    for (const side of sides) {
+      if (!(valid as string[]).includes(side)) {
+        throw new Error(`Invalid border side "${side}". Use a comma list of ${valid.join(', ')} or "all"/"inner".`);
+      }
+      out.add(side as XlsxBorderSide);
+    }
+    if (out.size === 0) {
+      throw new Error(`borders needs at least one side. Use a comma list of ${valid.join(', ')} or "all"/"inner".`);
+    }
+    return out;
+  }
+
+  private _argbFromHex(raw: string, label: string): string {
+    const match = /^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.exec(raw.trim());
+    if (!match) {
+      throw new Error(`${label} color "${raw}" must be #RRGGBB (or #AARRGGBB).`);
+    }
+    const hex = match[1].toUpperCase();
+    return hex.length === 6 ? `FF${hex}` : hex;
+  }
+
+  /**
+   * Auto-fit approximation for one column: the longest cell text (ExcelJS's
+   * derived text, cached formula results included) plus padding, capped. An
+   * empty column keeps a default width.
+   */
+  private _autoColumnWidth(ws: ExcelJS.Worksheet, col: number): number {
+    let maxLen = 0;
+    // Iterate allocated rows: actualRowCount counts rows WITH data, not the
+    // last row index, so a sparse sheet (data in rows 1 and 1000) measured only
+    // the leading run under a 1..actualRowCount loop.
+    ws.eachRow((row) => {
+      const text = row.getCell(col).text;
+      if (text) maxLen = Math.max(maxLen, String(text).length);
+    });
+    if (maxLen === 0) return XLSX_DEFAULT_COL_WIDTH;
+    return Math.min(maxLen + XLSX_AUTO_WIDTH_PADDING, XLSX_MAX_AUTO_WIDTH);
+  }
+
+  /** Converts a pixel size into Excel width characters (7px/char + 5px padding, default font). */
+  private _pixelsToWidth(pixels: number): number {
+    const width = Math.round(((pixels - 5) / 7) * 100) / 100;
+    if (width <= 0) {
+      throw new Error(`A pixel size of ${pixels} is too small for a column width; use at least 6.`);
+    }
+    return Math.min(width, XLSX_MAX_COL_WIDTH);
+  }
+
+  /** Converts a pixel size into row height points (0.75pt per px at 96dpi). */
+  private _pixelsToHeight(pixels: number): number {
+    return Math.min(Math.round(pixels * 0.75 * 100) / 100, XLSX_MAX_ROW_HEIGHT);
+  }
+
+  /**
+   * Reads the workbook's defined names. Type boundary: ExcelJS's DefinedNames
+   * typing lacks `model`; at runtime the getter returns a fresh array (or a
+   * record keyed by name) on every access - read-only here, mutation of the
+   * returned value would be a no-op.
+   */
+  private _readDefinedNames(): XlsxDefinedName[] {
+    const definedNames = this.workbook.definedNames as unknown as {
+      model?: Record<string, { name: string; ranges: string[] }> | { name: string; ranges: string[] }[];
+    };
+    const model = definedNames.model;
+    const out: XlsxDefinedName[] = [];
+    if (Array.isArray(model)) {
+      for (const entry of model) {
+        if (entry && typeof entry === 'object' && entry.name && Array.isArray(entry.ranges)) {
+          out.push({ name: entry.name, ranges: entry.ranges });
+        }
+      }
+    } else if (model && typeof model === 'object') {
+      for (const [key, val] of Object.entries(model)) {
+        if (val && typeof val === 'object' && Array.isArray(val.ranges)) {
+          out.push({ name: val.name || key, ranges: val.ranges });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
    * Resolves a worksheet by title, falling back to the first sheet. Throws with
    * the available sheet names when the title does not exist.
    */
@@ -955,6 +1686,101 @@ export class XlsxWorkbook {
       });
     });
     return count;
+  }
+
+  /**
+   * Snapshots every formula cell's effective text BEFORE a physical splice.
+   * Master cells contribute their own text; shared-formula slave cells
+   * contribute the text ExcelJS translates for them through their offset from
+   * the master - read now, while the master still holds pre-splice
+   * coordinates. Rewriting a slave from its snapshot promotes it to a
+   * standalone formula (semantics preserved, and the master is rewritten too).
+   * Entries carry the pre-splice address because spliceRows/spliceColumns copy
+   * values into fresh cell objects: cell references do not survive the splice.
+   */
+  private _snapshotFormulaTexts(ws: ExcelJS.Worksheet): {
+    row: number;
+    col: number;
+    current: string;
+    result: ExcelJS.CellFormulaValue['result'];
+  }[] {
+    const snapshot: {
+      row: number;
+      col: number;
+      current: string;
+      result: ExcelJS.CellFormulaValue['result'];
+    }[] = [];
+    ws.eachRow((row) => {
+      row.eachCell((cell, colNumber) => {
+        const value = cell.value;
+        if (!value || typeof value !== 'object') return;
+        if (!('formula' in value) && !('sharedFormula' in value)) return;
+        // the `in` guard narrows value to ExcelJS's CellFormulaValue/CellSharedFormulaValue
+        const current = typeof value.formula === 'string' ? value.formula : cell.formula;
+        if (typeof current !== 'string' || current === '') return;
+        snapshot.push({ row: row.number, col: colNumber, current, result: value.result });
+      });
+    });
+    return snapshot;
+  }
+
+  /**
+   * Rewrites the pre-splice formula snapshot against a splice operation and
+   * writes changed formulas back to their post-splice addresses: inserts shift
+   * cells at/after the splice point by count, deletes shift cells beyond the
+   * span up/left and drop the span itself.
+   */
+  private _rewriteFormulaRefs(
+    ws: ExcelJS.Worksheet,
+    snapshot: { row: number; col: number; current: string; result: ExcelJS.CellFormulaValue['result'] }[],
+    op: XlsxRefSpliceOp,
+    isRows: boolean
+  ): { rewritten: number; refErrors: number } {
+    let rewritten = 0;
+    let refErrors = 0;
+    const spanEnd = op.start + op.count - 1;
+    for (const entry of snapshot) {
+      const v = isRows ? entry.row : entry.col;
+      let row = entry.row;
+      let col = entry.col;
+      if (op.mode === 'insert') {
+        if (v >= op.start) {
+          if (isRows) row += op.count;
+          else col += op.count;
+        }
+      } else if (v > spanEnd) {
+        if (isRows) row -= op.count;
+        else col -= op.count;
+      } else if (v >= op.start) {
+        continue; // the cell itself fell inside the deleted span
+      }
+      const result = rewriteFormulaRefs(entry.current, op);
+      if (!result.changed) continue;
+      ws.getCell(row, col).value = { formula: result.formula, result: entry.result };
+      rewritten++;
+      refErrors += result.refErrors;
+    }
+    return { rewritten, refErrors };
+  }
+
+  /**
+   * Snapshots defined-name ranges as name -> range strings. ExcelJS keeps names
+   * in a private cell matrix; the model getter hands out an array of
+   * {name, ranges} with fully anchored "Sheet!$A$1:$B$2" strings. Names on other
+   * sheets are included and simply never change.
+   */
+  private _definedNameSignature(): Map<string, string[]> {
+    const signature = new Map<string, string[]>();
+    const definedNamesModel = this.workbook.definedNames as unknown as { model?: { name: string; ranges: string[] }[] };
+    const model = definedNamesModel.model;
+    if (Array.isArray(model)) {
+      for (const entry of model) {
+        if (entry && typeof entry.name === 'string' && Array.isArray(entry.ranges)) {
+          signature.set(entry.name, [...entry.ranges]);
+        }
+      }
+    }
+    return signature;
   }
 
   /** Clones per-cell styles from one row onto count rows starting at targetStart. */

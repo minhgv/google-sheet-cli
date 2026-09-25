@@ -23,6 +23,8 @@ export default class GridDelete extends Command {
 `,
     `$ gsheet grid:delete --workbook=template.xlsx -t "Functional effort" --dimension=ROWS --start=8 --count=5 --inPlace
 `,
+    `$ gsheet grid:delete --workbook=template.xlsx --dimension=ROWS --start=8 --count=2 --updateRefs --inPlace
+`,
   ];
 
   static flags = {
@@ -33,6 +35,11 @@ export default class GridDelete extends Command {
     ...dimensionFlags,
     force: Flags.boolean({
       description: 'Local backend only: adjust merged ranges that intersect the deleted span instead of refusing',
+      required: false,
+    }),
+    updateRefs: Flags.boolean({
+      description:
+        'Local backend only: rewrite same-sheet formula references and defined names affected by the delete (refs fully inside the deleted span become #REF!); cross-sheet references are left untouched',
       required: false,
     }),
   };
@@ -50,10 +57,18 @@ export default class GridDelete extends Command {
         start,
         count,
         force,
+        updateRefs,
         dryRun,
         rawOutput,
       },
     } = await this.parse(GridDelete);
+
+    if (updateRefs && spreadsheetId) {
+      throw new GSheetError(
+        GSheetErrorCode.USAGE,
+        '--updateRefs only applies to the local --workbook backend and cannot be combined with --spreadsheetId.'
+      );
+    }
 
     const target = await resolveWorkbookTarget(
       { workbook, spreadsheetId, worksheetTitle, output, inPlace, discardUnsupported, dryRun },
@@ -67,6 +82,7 @@ export default class GridDelete extends Command {
         start,
         count,
         force,
+        updateRefs,
         dryRun,
       });
       const saved = await saveWorkbookTarget(target, { workbook, output, inPlace, discardUnsupported, dryRun });
@@ -84,6 +100,9 @@ export default class GridDelete extends Command {
         }
       } else {
         this.log(`Deleted ${count} ${dimension.toLowerCase()} at ${start} from "${result.sheet}" -> ${saved?.savedPath}`);
+        if (updateRefs) {
+          this.log(`  - References updated: ${result.refsRewritten} rewritten, ${result.refsBroken} now #REF!`);
+        }
       }
       for (const w of result.warnings) this.warn(w);
       return receipt;

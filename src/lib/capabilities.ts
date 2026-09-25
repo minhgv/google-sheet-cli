@@ -17,7 +17,9 @@
  * the --redacted flag) changed only the CONTENT of existing fields - operations, outputForms,
  * visibility and mutationLimits grow entries; no field was added, removed or reinterpreted -
  * so schemaVersion stays 1. Consumers that string-match or enumerate entries keep working;
- * only a shape change will move the version.
+ * only a shape change will move the version. The later local-XLSX update (--updateRefs reference
+ * rewriting, format:cells / grid:freeze / grid:resize / grid:hide and worksheet:add|remove|rename
+ * on --workbook, workbook:names) follows the same rule: content-only growth, schemaVersion stays 1.
  */
 
 export const CAPABILITY_SCHEMA_VERSION = 1;
@@ -169,21 +171,32 @@ const CAPABILITY_DOCUMENT: CapabilityDocument = {
       operations: [
         'data:clear',
         'data:export-csv',
+        'format:cells',
         'format:merge',
         'grid:delete',
+        'grid:freeze',
+        'grid:hide',
         'grid:insert',
+        'grid:resize',
         'workbook:find',
         'workbook:inspect',
+        'workbook:names',
         'workbook:read',
         'workbook:write',
+        'worksheet:add',
+        'worksheet:remove',
+        'worksheet:rename',
         'report:run',
       ],
       inputForms: [
         'Positional JSON string: a nested 2D array or a full ReportDocument object (workbook:write).',
         '--cells JSON object {"A1": value} or [{"a1","value"}] list for sparse per-cell writes that leave every other cell untouched (workbook:write).',
         '--input <path> with JSON or CSV data, or --input - for standard input, using the same format detection as the Sheets commands (workbook:write, report:run).',
-        'Local .xlsx files: template input via --file, reads via --file plus a required --range (workbook:read), cell search via --file (workbook:find), inspection via --file (workbook:inspect), report sources via --sourceWorkbook (report:run).',
-        'Dual-backend mutations: grid:insert, grid:delete, format:merge and data:clear accept --workbook <file.xlsx> instead of --spreadsheetId; -t/--worksheetTitle selects the sheet inside the workbook, and the result lands on --output or --inPlace (never implicitly on the source).',
+        'Local .xlsx files: template input via --file, reads via --file plus a required --range (workbook:read), cell search via --file (workbook:find), inspection via --file (workbook:inspect), defined names via --file with a positional list|add|remove action (workbook:names), report sources via --sourceWorkbook (report:run).',
+        'Dual-backend mutations: grid:insert, grid:delete, grid:freeze, grid:resize, grid:hide, format:cells, ' +
+          'format:merge, worksheet:add, worksheet:remove, worksheet:rename and data:clear accept --workbook <file.xlsx> ' +
+          'instead of --spreadsheetId; -t/--worksheetTitle selects the sheet inside the workbook, and the result lands ' +
+          'on --output or --inPlace (never implicitly on the source).',
       ],
       outputForms: [
         'Human-readable text on stdout by default.',
@@ -192,6 +205,7 @@ const CAPABILITY_DOCUMENT: CapabilityDocument = {
         'Writes are published atomically: the destination is replaced by rename only after a complete serialization; --inPlace edits keep an automatic .bak backup.',
         'workbook:inspect reports per-sheet merged ranges, formula-cell counts (full address list with --includeFormulaCells), frozen panes, data validations and conditional-formatting ranges.',
         'workbook:find returns the same {matchCount, truncated, matches:[{a1,row,column,columnLetter,value,rowValues?}]} shape as data:find.',
+        'grid:insert/grid:delete --workbook with --updateRefs report refsRewritten and refsBroken in the receipt (references that now point at #REF!).',
       ],
       formulaSemantics: {
         write:
@@ -203,6 +217,8 @@ const CAPABILITY_DOCUMENT: CapabilityDocument = {
         'Formula-overwrite guard: applying data over cells that already contain formulas refuses the whole document unless --overwriteFormulas is passed; writing an identical (normalized) formula again is allowed as idempotent. The same guard covers --cells sparse writes and data:clear.',
         'Unsupported-feature preflight: loading detects features ExcelJS would drop (see fidelityExclusions), and saving such a workbook refuses unless --discardUnsupported is passed explicitly.',
         'grid:insert/grid:delete on --workbook refuse when a merged range intersects the splice boundary; --force adjusts the merge (insert extends it, delete shrinks or drops it).',
+        'worksheet:add/remove/rename on --workbook refuse duplicate sheet titles, removing the last visible sheet, and renaming onto an existing title.',
+        'format:cells on --workbook refuses --numberFormatType (the type is inferred from the --numberFormat pattern) and --wrapStrategy other than WRAP (WRAP maps to wrap text); --wrapText is local-only and refuses with --spreadsheetId.',
         '--dryRun previews the mutation without saving (workbook:write, grid:insert, grid:delete, format:merge, data:clear).',
         '--overwrite consent is required to replace an existing destination file.',
         'Saves are atomic: a failed serialization leaves the previous file in place.',
@@ -212,7 +228,7 @@ const CAPABILITY_DOCUMENT: CapabilityDocument = {
         'Changes are applied to an in-memory copy and published by one rename, so on-disk state never shows a partial write; multi-cell applies are validated as a whole and refuse as a whole on conflicts.',
         'Bounded inputs: the loader enforces file-size and archive-entry limits (default 50 MB compressed).',
         'Formula results are never recomputed; consumers depend on caches written by a real spreadsheet engine (see formulaSemantics).',
-        'Formula references are never rewritten by grid:insert/grid:delete: the receipt reports how many formula cells may reference the shifted region, and data validations / conditional formatting ranges are not adjusted.',
+        'Formula references and defined names are rewritten by grid:insert/grid:delete only with --updateRefs (local backend): same-sheet references are rewritten - references fully inside a deleted span become #REF! - and cross-sheet references are left untouched; the receipt reports refsRewritten and refsBroken. Without --updateRefs nothing is rewritten and the receipt reports how many formula cells may reference the shifted region; data validations / conditional formatting ranges are never adjusted.',
       ],
       fidelityExclusions: [
         'VBA macros, macro sheets and ActiveX control properties (xl/vbaProject.bin, xl/vbaProjectSignature.bin, xl/macrosheets/, xl/ctrlProps/)',

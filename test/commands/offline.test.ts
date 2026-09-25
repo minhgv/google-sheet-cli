@@ -406,7 +406,14 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
   {
     id: 'worksheet:add',
     usage: '$ google-sheet worksheet:add -t <value> -s <value> [-h] [-r]',
-    expected: [SPREADSHEET_ID_FLAG, WORKSHEET_TITLE_FLAG],
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
+    ],
   },
   {
     id: 'worksheet:get',
@@ -416,12 +423,27 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
   {
     id: 'worksheet:remove',
     usage: '$ google-sheet worksheet:remove -t <value> -s <value> [-h] [-r]',
-    expected: [SPREADSHEET_ID_FLAG, WORKSHEET_TITLE_FLAG],
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
+    ],
   },
   {
     id: 'worksheet:rename',
     usage: '$ google-sheet worksheet:rename -t <value> --newWorksheetTitle <value> -s <value> [-h] [-r]',
-    expected: [SPREADSHEET_ID_FLAG, WORKSHEET_TITLE_FLAG, '--newWorksheetTitle=<value> (required) New title of the worksheet to use'],
+    expected: [
+      SPREADSHEET_ID_FLAG,
+      WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
+      '--newWorksheetTitle=<value> (required) New title of the worksheet to use',
+    ],
   },
   {
     id: 'auth:login',
@@ -501,6 +523,20 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     skipAuthFlags: true,
   },
   {
+    id: 'workbook:names',
+    usage: '$ google-sheet workbook:names -f <value> [ACTION] [-h] [-r]',
+    expected: [
+      '-f, --file=<value> (required) Path to the local XLSX workbook',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
+      '--name=<value>',
+      '--refersTo=<value>',
+      '--dryRun',
+    ],
+    skipAuthFlags: true,
+  },
+  {
     id: 'report:run',
     usage: '$ google-sheet report:run --template <value> [-h] [-r]',
     expected: [
@@ -562,6 +598,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--range=<value>',
       '--bold',
       '--italic',
@@ -577,6 +617,7 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
       '<options: TOP|MIDDLE|BOTTOM>',
       '--wrapStrategy=<option>',
       '<options: OVERFLOW_CELL|CLIP|WRAP>',
+      '--wrapText',
       '--numberFormat=<value>',
       '--numberFormatType=<option>',
       '--borders=<value>',
@@ -646,6 +687,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--dimension=<option> (required)',
       '--start=<value> (required)',
       '--count=<value> [default: 1]',
@@ -659,6 +704,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--dimension=<option> (required)',
       '--start=<value> (required)',
       '--count=<value> [default: 1]',
@@ -673,6 +722,10 @@ const COMMANDS: { id: string; usage: string; expected: string[]; skipAuthFlags?:
     expected: [
       SPREADSHEET_ID_FLAG,
       WORKSHEET_TITLE_FLAG,
+      '--workbook=<value>',
+      '-o, --output=<value>',
+      '--inPlace',
+      '--discardUnsupported',
       '--rows=<value>',
       '--columns=<value>',
       '--dryRun',
@@ -1143,6 +1196,51 @@ describe('offline commands', () => {
 
       expect(stub.calls.map(({ method }) => method)).to.eql(['authorize', 'setMerge']);
       expect(result).to.have.property('requestCount', 1);
+    });
+  });
+
+  describe('format:cells --workbook', () => {
+    it('rejects --numberFormatType on the local backend with USAGE before any load', async () => {
+      const { error } = await runCommand([
+        'format:cells',
+        '--workbook=whatever.xlsx',
+        '--range=A1:B2',
+        '--numberFormat=#,##0.00',
+        '--numberFormatType=TEXT',
+        `--clientEmail=${CLIENT_EMAIL}`,
+      ]);
+      expect(error, 'format:cells should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--numberFormatType');
+      expect(error!.message).to.contain('no ExcelJS equivalent');
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('formatCells');
+    });
+
+    it('rejects --wrapStrategy=CLIP on the local backend with USAGE', async () => {
+      const { error } = await runCommand([
+        'format:cells',
+        '--workbook=whatever.xlsx',
+        '--range=A1:B2',
+        '--wrapStrategy=CLIP',
+        `--clientEmail=${CLIENT_EMAIL}`,
+      ]);
+      expect(error, 'format:cells should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--wrapStrategy=CLIP');
+      expect(error!.message).to.contain('no ExcelJS equivalent');
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('formatCells');
+    });
+
+    it('rejects local-only --wrapText on the Google Sheets backend', async () => {
+      const { error } = await runCommand([
+        'format:cells',
+        `--spreadsheetId=${SPREADSHEET_ID}`,
+        `--worksheetTitle=${WORKSHEET_TITLE}`,
+        `--clientEmail=${CLIENT_EMAIL}`,
+        '--range=A1:B2',
+        '--wrapText',
+      ]);
+      expect(error, 'format:cells should have failed').to.not.be.undefined;
+      expect(error!.message).to.contain('--wrapText');
+      expect(stub.calls.map(({ method }) => method)).to.not.contain('formatCells');
     });
   });
 

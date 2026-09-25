@@ -1,7 +1,14 @@
 import { Flags } from '@oclif/core';
-import Command, { spreadsheetId, worksheetTitle } from '../../lib/base-class';
+import Command, {
+  optionalSpreadsheetId,
+  optionalWorksheetTitle,
+  workbookTargetFlags,
+} from '../../lib/base-class';
+import { GSheetError, GSheetErrorCode } from '../../lib/cli-errors';
 import { readInput } from '../../lib/report/input';
 import { FormatSpec } from '../../lib/sheet-format';
+import { resolveWorkbookTarget, saveWorkbookTarget } from '../../lib/xlsx-target';
+import { XlsxFormatCellsOptions } from '../../lib/xlsx-types';
 
 const STYLE_FLAG_NAMES = [
   'bold',
@@ -14,6 +21,7 @@ const STYLE_FLAG_NAMES = [
   'backgroundColor',
   'horizontalAlignment',
   'verticalAlignment',
+  'wrapText',
   'wrapStrategy',
   'numberFormat',
   'numberFormatType',
@@ -23,7 +31,9 @@ const STYLE_FLAG_NAMES = [
 export default class FormatCells extends Command {
   static description =
     'Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. ' +
-    'Only formatting is touched - cell values and formulas are never overwritten.';
+    'Only formatting is touched - cell values and formulas are never overwritten. ' +
+    'With --workbook the format runs on a local XLSX file instead of Google Sheets, using the subset of ' +
+    'flags ExcelJS models (wrapStrategy only as WRAP; --numberFormatType has no local equivalent).';
 
   static examples = [
     `$ gsheet format:cells --spreadsheetId=<id> --worksheetTitle=Report --range=A1:J1 --bold --backgroundColor="#1a73e8" --textColor="#ffffff"
@@ -38,8 +48,9 @@ export default class FormatCells extends Command {
 
   static flags = {
     ...Command.flags,
-    spreadsheetId,
-    worksheetTitle,
+    spreadsheetId: optionalSpreadsheetId,
+    worksheetTitle: optionalWorksheetTitle,
+    ...workbookTargetFlags,
     range: Flags.string({ description: 'The A1 range to format (e.g. "A1:J1"); required unless --input carries "ranges"', required: false }),
     bold: Flags.boolean({ description: 'Bold text', required: false }),
     italic: Flags.boolean({ description: 'Italic text', required: false }),
@@ -60,8 +71,12 @@ export default class FormatCells extends Command {
       required: false,
     }),
     wrapStrategy: Flags.string({
-      description: 'Text wrap strategy',
+      description: 'Text wrap strategy (locally only WRAP is supported, mapped to wrap text)',
       options: ['OVERFLOW_CELL', 'CLIP', 'WRAP'],
+      required: false,
+    }),
+    wrapText: Flags.boolean({
+      description: 'Local backend only: wrap long text onto multiple lines within the cell',
       required: false,
     }),
     numberFormat: Flags.string({ description: 'Number format pattern (e.g. "#,##0.00", "0.0%", "YYYY-MM-DD")', required: false }),
@@ -100,8 +115,101 @@ export default class FormatCells extends Command {
       borders,
       borderStyle,
       borderColor,
+      workbook,
+      output,
+      inPlace,
+      discardUnsupported,
       ...styleFlags
     } = flags;
+
+    // --wrapText is a local-backend convenience; Sheets models wrap through --wrapStrategy
+    if (flags.wrapText && !workbook) {
+      throw new GSheetError(
+        GSheetErrorCode.USAGE,
+        '--wrapText only applies to the local --workbook backend. On Google Sheets, use --wrapStrategy=WRAP.'
+      );
+    }
+
+    // Local backend: flags without an ExcelJS equivalent are refused up front -
+    // before any workbook is loaded - instead of silently no-oping.
+    if (workbook) {
+      if (flags.numberFormatType !== undefined) {
+        throw new GSheetError(
+          GSheetErrorCode.USAGE,
+          '--numberFormatType has no ExcelJS equivalent. Locally the number format type is inferred from the --numberFormat pattern.'
+        );
+      }
+      if (flags.wrapStrategy !== undefined && flags.wrapStrategy !== 'WRAP') {
+        throw new GSheetError(
+          GSheetErrorCode.USAGE,
+          `--wrapStrategy=${flags.wrapStrategy} has no ExcelJS equivalent. Only WRAP is supported locally (mapped to wrap text); CLIP and OVERFLOW_CELL cannot be represented.`
+        );
+      }
+      if (input !== undefined && input !== '') {
+        throw new GSheetError(
+          GSheetErrorCode.USAGE,
+          '--input format specs are not supported on the local --workbook backend. Pass the style through flags.'
+        );
+      }
+    }
+
+    const target = await resolveWorkbookTarget(
+      { workbook, spreadsheetId, worksheetTitle, output, inPlace, discardUnsupported, dryRun },
+      this.id ?? 'format:cells'
+    );
+
+    if (target) {
+      if (!range) {
+        throw new Error('The --range flag is required when no --input spec is provided');
+      }
+      if (clear && STYLE_FLAG_NAMES.some((name) => (flags as Record<string, unknown>)[name] !== undefined)) {
+        throw new Error('The --clear flag cannot be combined with style flags');
+      }
+
+      const style: Partial<XlsxFormatCellsOptions> = {};
+      for (const name of STYLE_FLAG_NAMES) {
+        if (name === 'borders') continue;
+        const value = (styleFlags as Record<string, unknown>)[name];
+        if (value === undefined) continue;
+        if (name === 'wrapStrategy') {
+          // WRAP only - the other strategies are rejected above
+          style.wrapText = true;
+          continue;
+        }
+        (style as Record<string, unknown>)[name] = value;
+      }
+
+      const result = target.workbook.formatCells({
+        worksheetTitle: target.worksheetTitle,
+        range,
+        ...(clear
+          ? { clear: true }
+          : { ...style, borders, borderStyle: borderStyle as XlsxFormatCellsOptions['borderStyle'], borderColor }),
+        dryRun,
+      });
+      const saved = await saveWorkbookTarget(target, { workbook, output, inPlace, discardUnsupported, dryRun });
+      const receipt = { ...result, operation: this.id, saved };
+
+      if (rawOutput) {
+        this.logRaw('', receipt);
+      } else if (dryRun) {
+        this.log(
+          `Dry run: ${result.clear ? 'clear' : 'apply'} formatting on ${result.cellsFormatted} cell(s) in "${result.sheet}" (${workbook}); style: ${result.applied.join(', ')}`
+        );
+      } else {
+        this.log(
+          `${result.clear ? 'Cleared' : 'Applied'} formatting on ${result.cellsFormatted} cell(s) in "${result.sheet}" (${result.range}) -> ${saved?.savedPath}`
+        );
+      }
+      return receipt;
+    }
+
+    if (!spreadsheetId || !worksheetTitle) {
+      throw new GSheetError(
+        GSheetErrorCode.VALIDATION,
+        'No target given. Pass --spreadsheetId with --worksheetTitle for Google Sheets, or --workbook for a local XLSX file.'
+      );
+    }
 
     let spec: FormatSpec;
 

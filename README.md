@@ -679,7 +679,7 @@ The repository ships an agent skill and an integration guide:
 * [`google-sheet auth`](docs/auth.md) - Authenticate with your Google account via OAuth 2.0
 * [`google-sheet capabilities`](docs/capabilities.md) - Print the machine-readable capability document: per backend (google-sheets, local-xlsx) the supported operations, input and output forms, formula write-vs-recalculation semantics, destructive guards, mutation limits and local fidelity exclusions. Credential-free.
 * [`google-sheet data`](docs/data.md) - Manage data in worksheet
-* [`google-sheet format`](docs/format.md) - Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten.
+* [`google-sheet format`](docs/format.md) - Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten. With --workbook the format runs on a local XLSX file instead of Google Sheets, using the subset of flags ExcelJS models (wrapStrategy only as WRAP; --numberFormatType has no local equivalent).
 * [`google-sheet grid`](docs/grid.md) - Delete rows or columns from a worksheet. Data after the deleted range shifts up/left. --dryRun previews the values about to be removed. With --workbook the delete runs on a local XLSX file instead of Google Sheets.
 * [`google-sheet help`](docs/help.md) - Display help for google-sheet.
 * [`google-sheet report`](docs/report.md) - Report automation runner and template generation

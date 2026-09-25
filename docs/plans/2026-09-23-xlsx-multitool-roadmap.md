@@ -1,6 +1,6 @@
 # Local XLSX Multi-Tool Roadmap — Spec & Feasibility
 
-Status: Wave 1+2 DELIVERED (2026-09-23) — Waves 3-5 await user confirmation.
+Status: ALL WAVES DELIVERED (2026-09-24) — 809 offline tests green; reviewer pass done, 5 findings repaired.
 Date: 2026-09-23
 
 ## Context
@@ -245,19 +245,19 @@ Wave 2 — structural mutation:
 - [x] T-06 F6 `data:clear --workbook` → AC-07
 - [x] T-07 F12 `--discardUnsupported` gate → AC-06 (engine gate `allowUnsupportedFeatures` pre-existed; flag exposed on workbook:write, report:run, and every --workbook mutation)
 
-Wave 3 — the differentiator (AWAITING USER CONFIRMATION):
-- [ ] T-08 F7 `xlsx-refs.ts` tokenizer + shift engine, unit-tested standalone → AC-04
-- [ ] T-09 Wire `--updateRefs` into grid:insert/delete → AC-04
+Wave 3 — the differentiator:
+- [x] T-08 F7 `xlsx-refs.ts` tokenizer + shift engine, unit-tested standalone → AC-04
+- [x] T-09 Wire `--updateRefs` into grid:insert/delete → AC-04
 
-Wave 4 — presentation & sheet management (AWAITING USER CONFIRMATION):
-- [ ] T-10 F8 `format:cells --workbook` subset → AC-07
-- [ ] T-11 F9 freeze/resize/hide → AC-07
-- [ ] T-12 F10 worksheet add/remove/rename → AC-07
-- [ ] T-13 F11 `workbook:names` → AC-08
+Wave 4 — presentation & sheet management:
+- [x] T-10 F8 `format:cells --workbook` subset → AC-07
+- [x] T-11 F9 freeze/resize/hide → AC-07
+- [x] T-12 F10 worksheet add/remove/rename → AC-07
+- [x] T-13 F11 `workbook:names` → AC-08
 
 Wave 5 — docs & closeout:
 - [x] T-14 capabilities.ts + SKILL.md + agents.md sync → AC-08 (oclif docs regenerated via `npx oclif readme --multi`)
-- [ ] T-15 Full suite via test-runner, consolidated reviewer pass → AC-09 (suite green on main thread: 740 passing; reviewer pass deferred until waves 3-5 land or user closes scope)
+- [x] T-15 Full suite via test-runner, consolidated reviewer pass → AC-09 (809 passing; reviewer found 1 blocker + 4 minors, all repaired in one consolidated pass, suite re-verified green)
 
 Deferred (phase 2, not in this plan): cross-sheet ref rewriting,
 `worksheet:copy` local, data-validation/conditional-formatting write support,
@@ -287,9 +287,33 @@ cell comments, streaming mode for >50 MB workbooks.
   save plumbing), `src/commands/workbook/find.ts`. New `XlsxWorkbook` methods:
   `find`, `splice`, `mergeCellsRange`, `setCells`, `clearRange`; `inspect()`
   gained `XlsxInspectOptions`.
-- Known limitation shipped honestly: formula refs are never rewritten
-  (`formulasAtRisk` count + warning in every splice receipt); data validations
-  and conditional-formatting ranges are not adjusted by splice.
+- Ref semantics as shipped: without `--updateRefs` refs stay stale and every
+  splice receipt reports `formulasAtRisk` + warning; with it, same-sheet refs
+  + defined names are rewritten (`refsRewritten`/`refsBroken` in receipt).
+  Data validations and conditional-formatting ranges are never adjusted.
+- Wave 3+4 evidence (2026-09-24): `src/lib/xlsx-refs.ts` (pure tokenizer +
+  shift engine + defined-name diff); `splice(updateRefs)` rewrites same-sheet
+  refs + defined names, refs inside deleted span → #REF!, cross-sheet
+  untouched; `--updateRefs` on grid:insert/delete (USAGE error with -s).
+  Wave 4: `formatCells`, `freezePanes`, `resizeGrid`, `setGridHidden`,
+  `addSheet`/`removeSheet`/`renameSheet`, `listDefinedNames`/`addDefinedName`/
+  `removeDefinedName`; new command `workbook:names`; `--workbook` on
+  format:cells, grid:freeze/resize/hide, worksheet:add|remove|rename.
+- Reviewer pass (Tier-3) on `git diff e25b126`: 5 findings, all repaired —
+  (1) BLOCKER shared-formula slave double-shift → pre-splice
+  `_snapshotFormulaTexts` keyed by pre-splice address, rewrite re-resolves
+  post-splice; (2) freezePanes merged into prior views[0] preserving
+  unspecified axis + view attrs; (3) removeSheet drops defined names scoped
+  to the removed sheet; (4) _autoColumnWidth iterates allocated rows via
+  eachRow (sparse-row fix); (5) shiftSpan insert overflow → #REF!.
+- Test totals: 809 passing, 0 failing (`npm run test:unit`, test-runner
+  receipt). New suites: xlsx-refs.test.ts (33+), xlsx-format.test.ts (27+).
+- ExcelJS caveats discovered: spliceRows/spliceColumns DO shift defined
+  names internally (diff-based counting avoids double-shift) and rebuild
+  moved rows as fresh cell objects (snapshot must key by address, not cell
+  ref); definedNames.model getter returns fresh array (removeDefinedName
+  edits internal matrixMap — verified persists); definedNames.add(loc,name)
+  arg order; BorderStyle has no 'none'; freeze auto-adds topLeftCell.
 
 ## Assumptions and contingencies
 

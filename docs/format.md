@@ -1,33 +1,37 @@
 `google-sheet format`
 =====================
 
-Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten.
+Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten. With --workbook the format runs on a local XLSX file instead of Google Sheets, using the subset of flags ExcelJS models (wrapStrategy only as WRAP; --numberFormatType has no local equivalent).
 
 * [`google-sheet format:cells`](#google-sheet-formatcells)
 * [`google-sheet format:merge`](#google-sheet-formatmerge)
 
 ## `google-sheet format:cells`
 
-Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten.
+Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only formatting is touched - cell values and formulas are never overwritten. With --workbook the format runs on a local XLSX file instead of Google Sheets, using the subset of flags ExcelJS models (wrapStrategy only as WRAP; --numberFormatType has no local equivalent).
 
 ```
 USAGE
-  $ google-sheet format:cells -s <value> -t <value> [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f
-    <value>] [--useOauth] [--clientSecretFile <value>] [--range <value>] [--bold] [--italic] [--underline]
-    [--strikethrough] [--fontSize <value>] [--fontFamily <value>] [--textColor <value>] [--backgroundColor <value>]
-    [--horizontalAlignment LEFT|CENTER|RIGHT] [--verticalAlignment TOP|MIDDLE|BOTTOM] [--wrapStrategy
-    OVERFLOW_CELL|CLIP|WRAP] [--numberFormatType TEXT|NUMBER|PERCENT|CURRENCY|DATE|TIME|DATE_TIME|SCIENTIFIC
-    --numberFormat <value>] [--borders <value>] [--borderStyle DOTTED|DASHED|SOLID|SOLID_MEDIUM|SOLID_THICK|DOUBLE|NONE]
-    [--borderColor <value>] [--clear] [-i <value>] [--dryRun]
+  $ google-sheet format:cells [-h] [-r] [-j] [--redacted] [-c <value>] [-p <value>] [-f <value>] [--useOauth]
+    [--clientSecretFile <value>] [-s <value>] [-t <value>] [--workbook <value>] [-o <value>] [--inPlace]
+    [--discardUnsupported] [--range <value>] [--bold] [--italic] [--underline] [--strikethrough] [--fontSize <value>]
+    [--fontFamily <value>] [--textColor <value>] [--backgroundColor <value>] [--horizontalAlignment LEFT|CENTER|RIGHT]
+    [--verticalAlignment TOP|MIDDLE|BOTTOM] [--wrapStrategy OVERFLOW_CELL|CLIP|WRAP] [--wrapText] [--numberFormatType
+    TEXT|NUMBER|PERCENT|CURRENCY|DATE|TIME|DATE_TIME|SCIENTIFIC --numberFormat <value>] [--borders <value>]
+    [--borderStyle DOTTED|DASHED|SOLID|SOLID_MEDIUM|SOLID_THICK|DOUBLE|NONE] [--borderColor <value>] [--clear] [-i
+    <value>] [--dryRun]
 
 FLAGS
   -h, --help                          Show CLI help.
   -i, --input=<value>                 Path to a JSON format spec file (or "-" for stdin)
   -j, --json                          Report failures as a machine-readable JSON envelope on stderr (exit code 1 on
                                       failure). Success output is unchanged - use --rawOutput for JSON success.
+  -o, --output=<value>                Destination path for the modified XLSX file (without it and without --inPlace the
+                                      mutation is refused unless --dryRun)
   -r, --rawOutput                     Get the raw output as a JSON string
-  -s, --spreadsheetId=<value>         (required) [env: SPREADSHEET_ID] ID of the spreadsheet to use
-  -t, --worksheetTitle=<value>        (required) [env: WORKSHEET_TITLE] Title of the worksheet to use
+  -s, --spreadsheetId=<value>         [env: SPREADSHEET_ID] ID of the spreadsheet to use (Google Sheets target)
+  -t, --worksheetTitle=<value>        [env: WORKSHEET_TITLE] Title of the worksheet to use (Google Sheets target; also
+                                      selects the sheet inside --workbook)
       --backgroundColor=<value>       Cell background color as #RRGGBB
       --bold                          Bold text
       --borderColor=<value>           [default: #000000] Border color as #RRGGBB (only used with --borders)
@@ -36,11 +40,14 @@ FLAGS
       --borders=<value>               Border sides: comma list of top,bottom,left,right,innerHorizontal,innerVertical or
                                       "all"/"inner"
       --clear                         Reset all formatting on the range (cannot be combined with style flags)
+      --discardUnsupported            Allow saving a workbook whose unsupported features (charts, pivot tables, macros)
+                                      would be dropped by the local engine
       --dryRun                        Preview the batchUpdate requests without applying them
       --fontFamily=<value>            Font family name (e.g. "Roboto")
       --fontSize=<value>              Font size in points
       --horizontalAlignment=<option>  Horizontal alignment
                                       <options: LEFT|CENTER|RIGHT>
+      --inPlace                       Modify the --workbook file in place (a .bak backup is written first)
       --italic                        Italic text
       --numberFormat=<value>          Number format pattern (e.g. "#,##0.00", "0.0%", "YYYY-MM-DD")
       --numberFormatType=<option>     Explicit number format type (inferred from the pattern when omitted)
@@ -54,8 +61,11 @@ FLAGS
       --underline                     Underline text
       --verticalAlignment=<option>    Vertical alignment
                                       <options: TOP|MIDDLE|BOTTOM>
-      --wrapStrategy=<option>         Text wrap strategy
+      --workbook=<value>              Path to a local .xlsx workbook to mutate instead of the Google Sheets target. Long
+                                      name only: the shared short -f belongs to --credentialsFile
+      --wrapStrategy=<option>         Text wrap strategy (locally only WRAP is supported, mapped to wrap text)
                                       <options: OVERFLOW_CELL|CLIP|WRAP>
+      --wrapText                      Local backend only: wrap long text onto multiple lines within the cell
 
 AUTHENTICATION FLAGS
   -c, --clientEmail=<value>       [env: GSHEET_CLIENT_EMAIL] The client email to use for authentication. Uses the
@@ -71,7 +81,9 @@ AUTHENTICATION FLAGS
 
 DESCRIPTION
   Apply cell formatting (text style, colors, alignment, wrap, number format, borders) or clear formatting. Only
-  formatting is touched - cell values and formulas are never overwritten.
+  formatting is touched - cell values and formulas are never overwritten. With --workbook the format runs on a local
+  XLSX file instead of Google Sheets, using the subset of flags ExcelJS models (wrapStrategy only as WRAP;
+  --numberFormatType has no local equivalent).
 
 EXAMPLES
   $ gsheet format:cells --spreadsheetId=<id> --worksheetTitle=Report --range=A1:J1 --bold --backgroundColor="#1a73e8" --textColor="#ffffff"

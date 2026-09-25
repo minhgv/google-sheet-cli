@@ -93,17 +93,40 @@ workbook:write    [-f template.xlsx] [-o out.xlsx] -i <data.csv|json|-> [-t Shee
                   [--inPlace] [--dryRun] [--overwrite] [--overwriteFormulas] [--discardUnsupported] [-r]
                   (or pass data as positional JSON 2D array / ReportDocument)
                   --cells '{"B5":"x","J8":"GD_WEB1"}' sparse per-cell write; every other cell untouched
+workbook:names    -f <file.xlsx> [list|add|remove] [--name X [--refersTo 'Sheet!$A$1:$A$9']]
+                  [--inPlace|-o out.xlsx] [--dryRun] [--discardUnsupported] [-r]
+                  local-only defined names; list is the default; add needs --name + --refersTo,
+                  remove needs --name
 
 # Dual-backend mutations: --workbook <f.xlsx> instead of -s <id>; -t selects the sheet inside
 # the file; result lands on --output <path> or --inPlace (.bak backup), never implicitly on the
 # source; --dryRun previews without saving; --discardUnsupported consents to dropping
 # charts/pivots/macros the engine cannot preserve
 grid:insert       --workbook <f.xlsx> -t <sheet> --dimension ROWS|COLUMNS --start N [--count N]
-                  [--inheritFromBefore] [--force] (--inPlace|-o <out.xlsx>|--dryRun)
+                  [--inheritFromBefore] [--force] [--updateRefs] (--inPlace|-o <out.xlsx>|--dryRun)
 grid:delete       --workbook <f.xlsx> -t <sheet> --dimension ROWS|COLUMNS --start N [--count N]
-                  [--force] (--inPlace|-o <out.xlsx>|--dryRun)   dryRun lists removed values
+                  [--force] [--updateRefs] (--inPlace|-o <out.xlsx>|--dryRun)   dryRun lists removed values
+                  --updateRefs rewrites same-sheet A1 refs and defined names affected by the splice; refs
+                  fully inside the deleted span become #REF!; cross-sheet refs untouched; --updateRefs + -s
+                  → USAGE error; receipt gains refsRewritten/refsBroken (without it: formulasAtRisk)
+format:cells      --workbook <f.xlsx> -t <sheet> --range A1:J1 [--bold --italic --underline
+                  --strikethrough] [--fontSize N --fontFamily F --textColor #RRGGBB
+                  --backgroundColor #RRGGBB] [--horizontalAlignment LEFT|CENTER|RIGHT]
+                  [--verticalAlignment TOP|MIDDLE|BOTTOM] [--wrapText] [--numberFormat "#,##0.00"]
+                  [--borders top,bottom,all,inner --borderStyle SOLID_THICK --borderColor #RRGGBB]
+                  [--clear] (--inPlace|-o|--dryRun)   locally --numberFormatType refuses and
+                  --wrapStrategy only accepts WRAP (mapped to wrap text); --wrapText is local-only
 format:merge      --workbook <f.xlsx> -t <sheet> --range A1:J1
                   [--type MERGE_ALL|MERGE_COLUMNS|MERGE_ROWS|--unmerge] (--inPlace|-o|--dryRun)
+grid:freeze       --workbook <f.xlsx> -t <sheet> [--rows N] [--columns N] [--dryRun]   (0 unfreezes)
+grid:resize       --workbook <f.xlsx> -t <sheet> --dimension ROWS|COLUMNS --start N [--count N]
+                  (--pixels N|--auto) [--dryRun]
+grid:hide         --workbook <f.xlsx> -t <sheet> --dimension ROWS|COLUMNS --start N [--count N]
+                  [--unhide] [--dryRun]
+worksheet:add     --workbook <f.xlsx> -t <new-title> (--inPlace|-o|--dryRun)   duplicate title refused
+worksheet:remove  --workbook <f.xlsx> -t <title> (--inPlace|-o|--dryRun)   last visible sheet refused
+worksheet:rename  --workbook <f.xlsx> -t <old> -n <new> (--inPlace|-o|--dryRun)   collision refused
+                  (worksheet:copy is cloud-only — no local implementation)
 data:clear        --workbook <f.xlsx> --range 'Sheet1!A2:D20' [--overwriteFormulas]
                   (--inPlace|-o <out.xlsx>|--dryRun)
 
@@ -120,7 +143,7 @@ capabilities      print the machine-readable capability document: per-backend op
                   I/O forms, formula write vs recalculation, guards, mutation limits,
                   fidelity exclusions, drive.file visibility; listed ≠ authorized
 ```
-- Local structural edits: `grid:insert`/`grid:delete` on `--workbook` shift cells and manage merges explicitly — a merge intersecting the splice boundary refuses the operation unless `--force` (insert extends it, delete shrinks or drops it). Formula references are NEVER rewritten: the receipt reports `formulasAtRisk` so callers verify them; data validations and conditional formatting ranges are not adjusted. `format:merge` on `--workbook` decomposes MERGE_COLUMNS/MERGE_ROWS into per-line merges. `workbook:write --cells` writes only the listed addresses — the primitive for "fill columns A,B,C,D,J, skip formula columns" template work.
+- Local structural edits: `grid:insert`/`grid:delete` on `--workbook` shift cells and manage merges explicitly — a merge intersecting the splice boundary refuses the operation unless `--force` (insert extends it, delete shrinks or drops it). Formula references are rewritten only with `--updateRefs`: same-sheet A1 refs and defined names are fixed (refs fully inside a deleted span become `#REF!`), cross-sheet refs are left untouched (deferred), and the receipt reports `refsRewritten`/`refsBroken`; without it the receipt reports `formulasAtRisk` so callers verify them. Data validations and conditional formatting ranges are not adjusted either way. `format:merge` on `--workbook` decomposes MERGE_COLUMNS/MERGE_ROWS into per-line merges. `workbook:write --cells` writes only the listed addresses — the primitive for "fill columns A,B,C,D,J, skip formula columns" template work.
 
 - `-s` = spreadsheet ID (from URL `docs.google.com/spreadsheets/d/<ID>/edit`), `-t` = worksheet tab title (exact, case-sensitive — quote it).
 - All data commands accept: positional JSON array-of-arrays, `-i <file>` (format inferred from extension), or `-i -` (stdin; pipe CSV → add `--inputFormat csv`).
